@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 # Phase 4 dependencies (Redis Streams) will be added here
+

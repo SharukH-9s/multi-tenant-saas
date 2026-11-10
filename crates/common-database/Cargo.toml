@@ -7,3 +7,6 @@ edition = "2021"
 common-config = { path = "../common-config" }
 common-errors = { path = "../common-errors" }
 sqlx          = { workspace = true }
+
+[dev-dependencies]
+tokio         = { workspace = true }

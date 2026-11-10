@@ -1,45 +1,44 @@
 [workspace]
-resolver = "2"
+resolver = "2"  # Ensures Cargo resolves dependencies using modern Rust 2021 edition rules
 members = [
-    "crates/common-config",
-    "crates/common-errors",
-    "crates/common-auth",
-    "crates/common-telemetry",
-    "crates/common-database",
-    "crates/common-storage",
-    "crates/common-messaging",
-    "apps/tenant-saas",
+  "apps/tenant-saas",
+  "crates/common-auth",
+  "crates/common-config",
+  "crates/common-database",
+  "crates/common-errors",
+  "crates/common-messaging",
+  "crates/common-storage",
+  "crates/common-telemetry",
 ]
 
 [workspace.dependencies]
 # --- Async runtime ---
-tokio             = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
 
 # --- Web framework ---
-axum              = { version = "0.7", features = ["macros"] }
-tower             = "0.4"
-tower-http        = { version = "0.5", features = ["trace", "request-id", "cors", "timeout"] }
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "request-id", "timeout", "trace"] }
 
 # --- Database ---
-sqlx              = { version = "0.8", features = ["postgres", "uuid", "chrono", "runtime-tokio-native-tls"] }
+sqlx = { version = "0.8", features = ["chrono", "postgres", "runtime-tokio-native-tls", "uuid"] }
 
 # --- Serialization ---
-serde             = { version = "1", features = ["derive"] }
-serde_json        = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
+chrono = { version = "0.4", features = ["serde"] }
 # --- Common types ---
-uuid              = { version = "1", features = ["v4", "serde"] }
-chrono            = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["serde", "v4"] }
 
 # --- Observability ---
-tracing           = "0.1"
+tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
+anyhow = "1"
 # --- Error handling ---
-thiserror         = "1"
-anyhow            = "1"
+thiserror = "1"
 
 # --- Configuration ---
-config            = "0.14"
-dotenvy           = "0.15"
-
+config = "0.14"
+dotenvy = "0.15"

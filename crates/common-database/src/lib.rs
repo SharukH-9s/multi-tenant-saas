@@ -21,3 +21,21 @@ pub async fn ping(pool: &PgPool) -> Result<(), AppError> {
         .map(|_| ())
         .map_err(|_| AppError::ExternalService("database".into()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn create_pool_fails_gracefully_with_invalid_host() {
+        let config = DatabaseConfig {
+            url: "postgres://invalid_user:invalid_pwd@127.0.0.1:54321/nonexistent_db".to_string(),
+            migration_url: None,
+            max_connections: 5,
+            acquire_timeout_secs: 1,
+        };
+
+        let result = create_pool(&config).await;
+        assert!(matches!(result, Err(AppError::Internal(_))));
+    }
+}
