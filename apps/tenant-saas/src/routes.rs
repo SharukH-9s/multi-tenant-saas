@@ -9,8 +9,9 @@ use tower::ServiceBuilder;
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     timeout::TimeoutLayer,
-    trace::TraceLayer,
+    trace::{DefaultOnResponse, TraceLayer},
 };
+use tracing::Level;
 
 use crate::{app_state::AppState, handlers};
 
@@ -21,19 +22,22 @@ pub fn build_router(state: AppState) -> Router {
     let middleware = ServiceBuilder::new()
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(
-            TraceLayer::new_for_http().make_span_with(|req: &Request<_>| {
-                let request_id = req
-                    .headers()
-                    .get("x-request-id")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("unknown");
-                tracing::info_span!(
-                    "http_request",
-                    method = %req.method(),
-                    uri = %req.uri(),
-                    request_id,
-                )
-            }),
+            TraceLayer::new_for_http()
+                .make_span_with(|req: &Request<_>| {
+                    let request_id = req
+                        .headers()
+                        .get("x-request-id")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("unknown");
+                    tracing::info_span!(
+                        "http_request",
+                        method = %req.method(),
+                        uri = %req.uri(),
+                        request_id,
+                    )
+                })
+                // Logs status and latency; the default level (DEBUG) is hidden by RUST_LOG.
+                .on_response(DefaultOnResponse::new().level(Level::INFO)),
         )
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(TimeoutLayer::with_status_code(
