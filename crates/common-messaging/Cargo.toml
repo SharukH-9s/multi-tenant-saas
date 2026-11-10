@@ -1,0 +1,7 @@
+[package]
+name = "common-messaging"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Phase 4 dependencies (Redis Streams) will be added here

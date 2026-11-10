@@ -1,0 +1,9 @@
+[package]
+name = "common-database"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+common-config = { path = "../common-config" }
+common-errors = { path = "../common-errors" }
+sqlx          = { workspace = true }

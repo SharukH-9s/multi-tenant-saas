@@ -1,0 +1,7 @@
+[package]
+name = "common-storage"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Phase 3 dependencies (e.g. object_store) will be added here

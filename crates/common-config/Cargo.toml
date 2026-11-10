@@ -1,0 +1,10 @@
+[package]
+name = "common-config"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde     = { workspace = true }
+config    = { workspace = true }
+dotenvy   = { workspace = true }
+thiserror = { workspace = true }

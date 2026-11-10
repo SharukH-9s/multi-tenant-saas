@@ -1,0 +1,28 @@
+[package]
+name = "tenant-saas"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "tenant-saas-api"
+path = "src/main.rs"
+
+[dependencies]
+common-config    = { path = "../../crates/common-config" }
+common-errors    = { path = "../../crates/common-errors" }
+common-telemetry = { path = "../../crates/common-telemetry" }
+common-database  = { path = "../../crates/common-database" }
+common-auth      = { path = "../../crates/common-auth" }
+common-storage   = { path = "../../crates/common-storage" }
+common-messaging = { path = "../../crates/common-messaging" }
+
+tokio            = { workspace = true }
+axum             = { workspace = true }
+tower            = { workspace = true }
+tower-http       = { workspace = true }
+sqlx             = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+tracing          = { workspace = true }
+anyhow           = { workspace = true }
+dotenvy          = { workspace = true }

@@ -1,0 +1,6 @@
+[toolchain]
+# Pinned to 1.92.0 — the installed stable version.
+# Bump deliberately after verifying all dependencies compile cleanly.
+channel = "1.92.0"
+components = ["rustfmt", "clippy", "rust-src"]
+

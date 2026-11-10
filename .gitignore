@@ -1,0 +1,25 @@
+/target
+**/*.rs.bk
+
+# Local environment secrets — never commit
+.env
+.env.local
+.env.*.local
+
+# TLS certificates and private keys
+*.pem
+*.key
+
+# SQLx offline query cache
+# Commit .sqlx/ ONLY after SQLX_OFFLINE=true is confirmed working in CI.
+# Until then, keep it out to avoid stale cache issues.
+# .sqlx/
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
