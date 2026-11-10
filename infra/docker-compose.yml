@@ -1,0 +1,69 @@
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.0-pg16 # Pinned: Phase 5 needs pgvector iterative scans
+    environment:
+      POSTGRES_DB: tenant_saas
+      POSTGRES_USER: db_owner # Migration owner, not the app runtime account
+      POSTGRES_PASSWORD: owner_password
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U db_owner -d tenant_saas"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Upstream MinIO images were removed from Docker Hub and Quay in 2025-26, so we
+  # use pgsty/silo, a maintained MinIO fork (same S3 API and MINIO_* variables).
+  minio:
+    image: pgsty/silo:RELEASE.2026-11-09T00-00-00Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Creates the private bucket on first `up`, so developers need no local client.
+  minio-init:
+    image: pgsty/silo:RELEASE.2026-11-09T00-00-00Z # Bundles the client as `mcli`
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mcli alias set local http://minio:9000 minioadmin minioadmin &&
+        mcli mb --ignore-existing local/tenant-documents &&
+        mcli anonymous set none local/tenant-documents &&
+        echo 'MinIO bucket initialized: tenant-documents (private)'
+      "
+    restart: "no"
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:

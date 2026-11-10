@@ -27,3 +27,6 @@ tracing          = { workspace = true }
 anyhow           = { workspace = true }
 dotenvy          = { workspace = true }
 
+[dev-dependencies]
+tower            = { workspace = true, features = ["util"] }
+
