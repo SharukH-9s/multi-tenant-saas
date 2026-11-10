@@ -6,7 +6,7 @@ A production-oriented multi-tenant AI SaaS platform built in Rust.
 
 - **Rust** (version pinned in `rust-toolchain.toml`; install via `rustup`)
 - **Docker Desktop** (with Compose V2)
-- **sqlx-cli**: `cargo install sqlx-cli --no-default-features --features postgres --locked`
+- **sqlx-cli**: `cargo install sqlx-cli --version "^0.8" --no-default-features --features postgres --locked`
 
 ## Workspace Layout
 
