@@ -16,12 +16,12 @@ members = [
 tokio = { version = "1", features = ["full"] }
 
 # --- Web framework ---
-axum = { version = "0.7", features = ["macros"] }
-tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "request-id", "timeout", "trace"] }
+axum = { version = "0.8", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.7", features = ["cors", "request-id", "timeout", "trace"] }
 
 # --- Database ---
-sqlx = { version = "0.8", features = ["chrono", "postgres", "runtime-tokio-native-tls", "uuid"] }
+sqlx = { version = "0.9", features = ["chrono", "postgres", "runtime-tokio", "tls-native-tls", "uuid"] }
 
 # --- Serialization ---
 serde = { version = "1", features = ["derive"] }
@@ -37,8 +37,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 anyhow = "1"
 # --- Error handling ---
-thiserror = "1"
+thiserror = "2"
 
 # --- Configuration ---
-config = "0.14"
+config = "0.15"
 dotenvy = "0.15"

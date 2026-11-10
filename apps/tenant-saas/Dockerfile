@@ -2,7 +2,7 @@
 #   docker build -f apps/tenant-saas/Dockerfile -t tenant-saas-api .
 
 # Overrides rust-toolchain.toml so rustup does not download extra components.
-ARG RUST_VERSION=1.92.0
+ARG RUST_VERSION=1.99.1
 
 # ── Stage 1: cargo-chef base ──────────────────────────────────────────────
 FROM rust:${RUST_VERSION}-slim-bookworm AS chef

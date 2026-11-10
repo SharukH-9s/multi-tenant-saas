@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.92.0
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
@@ -49,10 +49,10 @@ jobs:
       RUNTIME_URL: postgres://app_runtime:runtime_password@localhost:5432/tenant_saas_test
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.92.0
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
       - name: Install sqlx-cli
-        run: cargo install sqlx-cli --version "^0.8" --no-default-features --features postgres --locked
+        run: cargo install sqlx-cli --no-default-features --features postgres --locked
       # Same script docker-compose runs on first start, so CI and local dev agree.
       - name: Create app_runtime role
         run: psql "$MIGRATION_URL" -v ON_ERROR_STOP=1 -f infra/postgres/init/00_roles.sql
@@ -77,6 +77,6 @@ jobs:
     needs: [check, test]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.92.0
+      - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --bin tenant-saas-api

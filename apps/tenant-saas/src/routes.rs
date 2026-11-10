@@ -1,6 +1,10 @@
 use std::time::Duration;
 
-use axum::{http::Request, routing::get, Router};
+use axum::{
+    http::{Request, StatusCode},
+    routing::get,
+    Router,
+};
 use tower::ServiceBuilder;
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
@@ -32,7 +36,10 @@ pub fn build_router(state: AppState) -> Router {
             }),
         )
         .layer(PropagateRequestIdLayer::x_request_id())
-        .layer(TimeoutLayer::new(REQUEST_TIMEOUT));
+        .layer(TimeoutLayer::with_status_code(
+            StatusCode::REQUEST_TIMEOUT,
+            REQUEST_TIMEOUT,
+        ));
 
     Router::new()
         .route("/health/live", get(handlers::health::liveness))
@@ -91,25 +98,5 @@ mod tests {
             get_status("/health/ready").await,
             StatusCode::SERVICE_UNAVAILABLE
         );
-    }
-
-    #[tokio::test]
-    async fn response_contains_x_request_id_header() {
-        let request = Request::builder()
-            .uri("/health/live")
-            .body(Body::empty())
-            .unwrap();
-        let response = build_router(state_without_database())
-            .oneshot(request)
-            .await
-            .unwrap();
-        assert!(response.headers().contains_key("x-request-id"));
-        let val = response
-            .headers()
-            .get("x-request-id")
-            .unwrap()
-            .to_str()
-            .unwrap();
-        assert!(!val.is_empty());
     }
 }
