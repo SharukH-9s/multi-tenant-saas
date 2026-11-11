@@ -1,13 +1,10 @@
-mod app_state;
-mod handlers;
-mod routes;
-
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Context;
-use app_state::AppState;
 use common_config::AppConfig;
 use sqlx::PgPool;
+use tenant_saas::{app_state::AppState, routes};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -25,14 +22,17 @@ async fn main() -> anyhow::Result<()> {
     let db = common_database::create_pool(&config.database).await?;
 
     let addr = format!("{}:{}", config.app.host, config.app.port);
-    let state = AppState {
-        db,
-        config: Arc::new(config),
-    };
+    let state = AppState::new(db, Arc::new(config))?;
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!(address = %addr, "API listening");
-    axum::serve(listener, routes::build_router(state)).await?;
+
+    // ConnectInfo<SocketAddr> makes the TCP peer address available to `ClientIp`.
+    axum::serve(
+        listener,
+        routes::build_router(state).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }
