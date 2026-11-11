@@ -1,0 +1,38 @@
+[package]
+name = "integration-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+autotests = false
+
+# Shared helpers (`TestApp`, factories) used by both test targets.
+[lib]
+name = "test_support"
+path = "common/mod.rs"
+
+[[test]]
+name = "integration"
+path = "integration/main.rs"
+
+[[test]]
+name = "security"
+path = "security/main.rs"
+
+[dependencies]
+tenant-saas      = { path = "../apps/tenant-saas" }
+common-auth      = { path = "../crates/common-auth" }
+common-config    = { path = "../crates/common-config" }
+common-errors    = { path = "../crates/common-errors" }
+common-database  = { path = "../crates/common-database" }
+
+axum             = { workspace = true }
+dotenvy          = { workspace = true }
+http-body-util   = { workspace = true }
+redis            = { workspace = true }
+serde_json       = { workspace = true }
+sqlx             = { workspace = true }
+tokio            = { workspace = true }
+tower            = { workspace = true, features = ["util"] }
+tracing          = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid             = { workspace = true }
