@@ -22,6 +22,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Verify TenantContext constructor grep guard
+        run: |
+          count=$(grep -rn "from_verified_membership" apps/tenant-saas/src/ | grep -v "auth/tenant_resolver.rs" | wc -l)
+          if [ "$count" -ne 0 ]; then
+            echo "FORBIDDEN: TenantContext::from_verified_membership called outside auth::tenant_resolver!"
+            exit 1
+          fi
+          echo "TenantContext constructor grep guard: PASS"
 
   test:
     name: Tests
@@ -31,11 +39,11 @@ jobs:
         image: pgvector/pgvector:0.8.0-pg16
         env:
           POSTGRES_DB: tenant_saas_test
-          POSTGRES_USER: db_owner
-          POSTGRES_PASSWORD: owner_password
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres_password
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U db_owner -d tenant_saas_test"
+          --health-cmd "pg_isready -U postgres -d tenant_saas_test"
           --health-interval 5s --health-timeout 5s --health-retries 10
       redis:
         image: redis:7-alpine
@@ -44,8 +52,11 @@ jobs:
           --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 3s --health-retries 5
     env:
-      # Owner account: used by psql and sqlx-cli below.
+      # Bootstrap superuser for role initialization
+      BOOTSTRAP_URL: postgres://postgres:postgres_password@localhost:5432/tenant_saas_test
+      # Non-superuser migration runner
       MIGRATION_URL: postgres://db_owner:owner_password@localhost:5432/tenant_saas_test
+      # Application runtime role (strictly bound by RLS)
       RUNTIME_URL: postgres://app_runtime:runtime_password@localhost:5432/tenant_saas_test
     steps:
       - uses: actions/checkout@v4
@@ -53,13 +64,42 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install sqlx-cli
         run: cargo install sqlx-cli --no-default-features --features postgres --locked
-      # Same script docker-compose runs on first start, so CI and local dev agree.
-      - name: Create app_runtime role
-        run: psql "$MIGRATION_URL" -v ON_ERROR_STOP=1 -f infra/postgres/init/00_roles.sql
+      # Bootstrap roles with non-superuser privileges
+      - name: Create database roles
+        run: psql "$BOOTSTRAP_URL" -v ON_ERROR_STOP=1 -f infra/postgres/init/00_roles.sql
       - name: Run migrations
         run: sqlx migrate run --source apps/tenant-saas/migrations
         env:
           DATABASE_URL: ${{ env.MIGRATION_URL }}
+      - name: RLS sanity
+        run: |
+          psql "$MIGRATION_URL" -c "
+            SELECT relname, relrowsecurity, relforcerowsecurity
+            FROM pg_class
+            WHERE relname IN ('tenants', 'memberships', 'users');
+          "
+          # Verify app_runtime cannot select password_hash directly
+          output=$(psql "$RUNTIME_URL" -c "SELECT password_hash FROM users;" 2>&1 || true)
+          echo "$output"
+          echo "$output" | grep -q "permission denied"
+          echo "app_runtime password_hash denial: PASS"
+      - name: Verify db_owner and app_runtime are NOT superusers
+        run: |
+          psql "$BOOTSTRAP_URL" -c "
+            DO \$\$
+            DECLARE
+              rec RECORD;
+            BEGIN
+              FOR rec IN SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname IN ('db_owner', 'app_runtime') LOOP
+                IF rec.rolsuper THEN
+                  RAISE EXCEPTION 'Role % is a SUPERUSER! This will bypass RLS.', rec.rolname;
+                END IF;
+                IF rec.rolbypassrls THEN
+                  RAISE EXCEPTION 'Role % has BYPASSRLS! This will bypass RLS.', rec.rolname;
+                END IF;
+              END LOOP;
+            END \$\$;
+          "
       - name: Verify app_runtime cannot perform DDL
         run: |
           output=$(psql "$RUNTIME_URL" -c "CREATE TABLE forbidden_test ();" 2>&1 || true)
@@ -70,6 +110,9 @@ jobs:
         run: cargo test --workspace
         env:
           DATABASE_URL: ${{ env.RUNTIME_URL }}
+          # db_owner pool, used by integration tests for fixture seeding only
+          DATABASE_MIGRATION_URL: ${{ env.MIGRATION_URL }}
+          REDIS_URL: redis://localhost:6379
 
   build:
     name: Build Release Binary

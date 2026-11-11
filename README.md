@@ -18,13 +18,14 @@ portfolio-engine/
 ├── crates/
 │   ├── common-config/      # Typed configuration loading
 │   ├── common-errors/      # Error hierarchy and client-safe response mapping
-│   ├── common-auth/        # Authentication, claims, and principal (Phase 2 stub)
+│   ├── common-auth/        # Authentication, claims, Argon2id, JWT & TenantContext
 │   ├── common-telemetry/   # Structured logging & tracing
-│   ├── common-database/    # PostgreSQL connection pool and health check
+│   ├── common-database/    # PostgreSQL connection pool and scoped transaction helpers
 │   ├── common-storage/     # Object storage abstraction (Phase 3 stub)
 │   └── common-messaging/   # Redis Streams producer/consumer helpers (Phase 4 stub)
 ├── apps/
 │   └── tenant-saas/        # Axum API (migrations live in `migrations/`)
+├── tests/                  # Integration and security test suites
 ├── infra/                  # Docker Compose and Postgres init scripts
 └── docs/adr/               # Architecture Decision Records
 ```
@@ -59,6 +60,69 @@ curl http://localhost:8080/health/ready  # 200 {"status":"ready","db":"ok"}
 ```
 
 `/health/ready` returns `503` while PostgreSQL is down; `/health/live` stays `200`.
+
+### Auth & Multi-Tenancy Quick-Start
+
+Run these commands to walk through registration, login, tenant creation, and invitations:
+
+```sh
+# 1. Register a user
+curl -X POST http://localhost:8080/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email": "alice@example.com", "password": "correct-horse-battery"}'
+
+# 2. Login to get an access token
+TOKENS=$(curl -s -X POST http://localhost:8080/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "alice@example.com", "password": "correct-horse-battery"}')
+ACCESS_TOKEN=$(echo $TOKENS | grep -o '"access_token":"[^"]*' | cut -d'"' -f4)
+
+# 3. Create a tenant (Alice automatically becomes Owner)
+TENANT=$(curl -s -X POST http://localhost:8080/api/v1/tenants \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -d '{"name": "Acme Corp", "slug": "acme-corp"}')
+TENANT_ID=$(echo $TENANT | grep -o '"id":"[^"]*' | cut -d'"' -f4)
+
+# 4. Register a second user (Bob)
+curl -X POST http://localhost:8080/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email": "bob@example.com", "password": "correct-horse-battery"}'
+
+# 5. Alice invites Bob as Member
+curl -X POST http://localhost:8080/api/v1/tenants/$TENANT_ID/invitations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -d '{"email": "bob@example.com", "role": "member"}'
+
+# 6. Bob logs in and accepts the invitation
+BOB_TOKENS=$(curl -s -X POST http://localhost:8080/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email": "bob@example.com", "password": "correct-horse-battery"}')
+BOB_TOKEN=$(echo $BOB_TOKENS | grep -o '"access_token":"[^"]*' | cut -d'"' -f4)
+
+curl -X POST http://localhost:8080/api/v1/invitations/$TENANT_ID/accept \
+  -H "Authorization: Bearer $BOB_TOKEN"
+
+# 7. Bob reads tenant details
+curl http://localhost:8080/api/v1/tenants/$TENANT_ID \
+  -H "Authorization: Bearer $BOB_TOKEN"
+```
+
+### Operational Runbook (Identity & Sessions)
+
+- **Disable a user:**
+  ```sql
+  -- Run as db_owner
+  UPDATE users SET status = 'disabled' WHERE email = 'target@example.com';
+  ```
+  A disabled user is immediately denied access on their next request across all endpoints (`/auth/me`, tenant resolution, and token refresh).
+
+- **Revoke all sessions for a user:**
+  ```sql
+  -- Run as db_owner
+  UPDATE refresh_tokens SET revoked_at = now() WHERE user_id = '<user-id>' AND revoked_at IS NULL;
+  ```
 
 ### Clean restart
 
