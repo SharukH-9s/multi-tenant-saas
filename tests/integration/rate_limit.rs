@@ -48,7 +48,7 @@ async fn ip_bucket_exhaustion_returns_429_with_retry_after() {
         return;
     };
 
-    let ip = format!("198.51.100.{}", unique_octet());
+    let ip = unique_ip();
     let email = format!("{}@example.com", unique("rl-ip"));
     let body = json!({ "email": email, "password": "wrong-password" });
 
@@ -93,7 +93,7 @@ async fn ip_email_bucket_exhaustion_blocks_specific_email() {
         return;
     };
 
-    let ip = format!("198.51.100.{}", unique_octet());
+    let ip = unique_ip();
     let target_email = format!("{}@example.com", unique("rl-email-target"));
     let other_email = format!("{}@example.com", unique("rl-email-other"));
 
@@ -151,8 +151,8 @@ async fn no_victim_lockout_when_attacker_exhausts_email_from_another_ip() {
         .await;
     assert_eq!(reg_status, StatusCode::CREATED);
 
-    let attacker_ip = format!("198.51.100.{}", unique_octet());
-    let victim_ip = format!("198.51.100.{}", unique_octet());
+    let attacker_ip = unique_ip();
+    let victim_ip = unique_ip();
 
     // Attacker spams 3 login attempts with victim's email from attacker_ip
     let attacker_body = json!({ "email": victim_email, "password": "wrong-password" });
@@ -204,7 +204,7 @@ async fn endpoint_buckets_are_isolated() {
         return;
     };
 
-    let ip = format!("198.51.100.{}", unique_octet());
+    let ip = unique_ip();
     let email = format!("{}@example.com", unique("isolated"));
     let body = json!({ "email": email, "password": "wrong" });
 
@@ -263,7 +263,7 @@ async fn tokens_refill_over_time() {
         return;
     };
 
-    let ip = format!("198.51.100.{}", unique_octet());
+    let ip = unique_ip();
     let email = format!("{}@example.com", unique("refill"));
     let body = json!({ "email": email, "password": "wrong" });
 
@@ -362,7 +362,7 @@ async fn concurrent_requests_do_not_exceed_capacity() {
         return;
     };
 
-    let ip = format!("198.51.100.{}", unique_octet());
+    let ip = unique_ip();
     let email = format!("{}@example.com", unique("concurrency"));
     let body = json!({ "email": email, "password": "wrong" });
 
@@ -402,6 +402,11 @@ async fn concurrent_requests_do_not_exceed_capacity() {
     );
 }
 
-fn unique_octet() -> u8 {
-    (uuid::Uuid::new_v4().as_bytes()[1] % 240) + 10
+fn unique_ip() -> String {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(1);
+    let c = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let u = uuid::Uuid::new_v4();
+    let b = u.as_bytes();
+    format!("198.51.{}.{}", b[0], (c % 250) + 1)
 }
