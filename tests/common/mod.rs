@@ -351,8 +351,24 @@ impl TestApp {
         tenant_id
     }
 
+    /// Ensures a user row exists in the `users` table for `user_id`.
+    pub async fn ensure_user_exists(&self, user_id: Uuid) {
+        let email = format!("user-{}@example.com", user_id);
+        sqlx::query(
+            "INSERT INTO users (id, email, password_hash)
+             VALUES ($1, $2, 'dummy_hash')
+             ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(user_id)
+        .bind(email)
+        .execute(self.owner())
+        .await
+        .expect("ensure user exists");
+    }
+
     /// Adds `user_id` to an existing tenant.
     pub async fn add_member(&self, tenant_id: Uuid, user_id: Uuid, role: &str, status: &str) {
+        self.ensure_user_exists(user_id).await;
         let mut tx = self.owner_scoped_tx(tenant_id, user_id).await;
         sqlx::query(
             "INSERT INTO memberships (tenant_id, user_id, role, status) VALUES ($1, $2, $3, $4)",
