@@ -359,4 +359,3 @@ async fn disabled_user_is_unauthorized_across_tenants_immediately() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(resp["error"]["code"], "UNAUTHORIZED");
 }
-

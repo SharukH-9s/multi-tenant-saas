@@ -190,4 +190,3 @@ async fn app_runtime_permission_restrictions() {
         "app_runtime must not have CREATE table privileges"
     );
 }
-

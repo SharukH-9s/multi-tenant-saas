@@ -12,11 +12,6 @@ $$;
 
 ALTER ROLE db_owner NOSUPERUSER NOBYPASSRLS NOCREATEROLE;
 
--- Grant db_owner schema ownership on the target database
-GRANT ALL ON DATABASE tenant_saas TO db_owner;
-ALTER SCHEMA public OWNER TO db_owner;
-GRANT ALL ON SCHEMA public TO db_owner;
-
 -- 2. Create application runtime role (non-superuser, no DDL, strictly bound by RLS)
 DO $$
 BEGIN
@@ -28,6 +23,16 @@ $$;
 
 ALTER ROLE app_runtime NOSUPERUSER NOBYPASSRLS NOCREATEROLE;
 
--- Basic connectivity for app_runtime (table-level grants added per migration)
-GRANT CONNECT ON DATABASE tenant_saas TO app_runtime;
+-- 3. Dynamic database grants for the current target database
+DO $$
+BEGIN
+    EXECUTE format('GRANT ALL ON DATABASE %I TO db_owner', current_database());
+    EXECUTE format('GRANT CONNECT ON DATABASE %I TO app_runtime', current_database());
+END
+$$;
+
+-- 4. Schema grants
+ALTER SCHEMA public OWNER TO db_owner;
+GRANT ALL ON SCHEMA public TO db_owner;
 GRANT USAGE ON SCHEMA public TO app_runtime;
+
