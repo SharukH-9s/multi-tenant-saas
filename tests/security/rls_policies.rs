@@ -85,20 +85,7 @@ async fn guc_scoped_to_tenant_a_cannot_read_or_modify_tenant_b() {
         "Tenant B must not be visible under Tenant A scope"
     );
 
-    // 2. Cannot INSERT a membership belonging to Tenant B (WITH CHECK violation)
-    let insert_b = sqlx::query(
-        "INSERT INTO memberships (tenant_id, user_id, role, status) VALUES ($1, $2, 'member', 'active')",
-    )
-    .bind(tenant_b)
-    .bind(Uuid::new_v4())
-    .execute(&mut *tx)
-    .await;
-    assert!(
-        insert_b.is_err(),
-        "INSERT into foreign tenant must be blocked by RLS WITH CHECK"
-    );
-
-    // 3. UPDATE of Tenant B row affects 0 rows
+    // 2. UPDATE of Tenant B row affects 0 rows
     let update_b = sqlx::query("UPDATE tenants SET name = 'Tampered' WHERE id = $1")
         .bind(tenant_b)
         .execute(&mut *tx)
@@ -110,7 +97,7 @@ async fn guc_scoped_to_tenant_a_cannot_read_or_modify_tenant_b() {
         "UPDATE on foreign tenant must affect 0 rows"
     );
 
-    // 4. DELETE of Tenant B membership affects 0 rows
+    // 3. DELETE of Tenant B membership affects 0 rows
     let delete_b = sqlx::query("DELETE FROM memberships WHERE tenant_id = $1")
         .bind(tenant_b)
         .execute(&mut *tx)
@@ -120,6 +107,19 @@ async fn guc_scoped_to_tenant_a_cannot_read_or_modify_tenant_b() {
         delete_b.rows_affected(),
         0,
         "DELETE on foreign membership must affect 0 rows"
+    );
+
+    // 4. Cannot INSERT a membership belonging to Tenant B (WITH CHECK violation)
+    let insert_b = sqlx::query(
+        "INSERT INTO memberships (tenant_id, user_id, role, status) VALUES ($1, $2, 'member', 'active')",
+    )
+    .bind(tenant_b)
+    .bind(user_a)
+    .execute(&mut *tx)
+    .await;
+    assert!(
+        insert_b.is_err(),
+        "INSERT into foreign tenant must be blocked by RLS WITH CHECK"
     );
 
     tx.rollback().await.expect("rollback");
