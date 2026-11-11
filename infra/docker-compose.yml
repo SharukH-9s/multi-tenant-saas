@@ -3,15 +3,15 @@ services:
     image: pgvector/pgvector:0.8.0-pg16 # Pinned: Phase 5 needs pgvector iterative scans
     environment:
       POSTGRES_DB: tenant_saas
-      POSTGRES_USER: db_owner # Migration owner, not the app runtime account
-      POSTGRES_PASSWORD: owner_password
+      POSTGRES_USER: postgres # Bootstrap superuser only (executes /docker-entrypoint-initdb.d)
+      POSTGRES_PASSWORD: postgres_password
     ports:
       - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U db_owner -d tenant_saas"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tenant_saas"]
       interval: 5s
       timeout: 5s
       retries: 10

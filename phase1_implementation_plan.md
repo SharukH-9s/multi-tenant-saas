@@ -193,9 +193,9 @@ JWT_EXPIRY_SECS=3600
 ```
 
 **Deliverable checklist:**
-- [ ] `cargo build --workspace` succeeds
-- [ ] `cargo fmt --check --all` passes
-- [ ] `cargo clippy --all-targets --all-features -- -D warnings` passes
+- [x] `cargo build --workspace` succeeds
+- [x] `cargo fmt --check --all` passes
+- [x] `cargo clippy --all-targets --all-features -- -D warnings` passes
 
 ---
 
@@ -928,34 +928,34 @@ cargo test --all
 ## Phase 1 Deliverable Checklist
 
 ### Must complete
-- [ ] `Cargo.toml` workspace with `resolver = "2"`
-- [ ] `rust-toolchain.toml` pinned to stable
-- [ ] All 7 crates compiling (`cargo build --workspace`)
-- [ ] `.env.example` with **consistent** `DATABASE_URL` (app_runtime) and `DATABASE_MIGRATION_URL` (db_owner)
-- [ ] `common-errors`: `AppError` with safe `IntoResponse`; no SQL details to clients
-- [ ] `common-config`: typed config, fails fast on missing required values
-- [ ] `common-telemetry`: JSON structured logging
-- [ ] `common-database`: pool creation using `app_runtime` URL; `ping` function; **no `begin_tenant_tx`**
-- [ ] `common-auth`, `common-storage`, `common-messaging`: compiling stubs
-- [ ] Migration `001_foundation.sql`: extensions + two roles only; no domain tables
-- [ ] `app_runtime` role created before migrations run
-- [ ] `app_runtime` verified to lack DDL privileges
-- [ ] `AppState` with `PgPool` and `Arc<AppConfig>`
-- [ ] `main.rs`: migrations gated to `APP_ENV=development` only
-- [ ] Request ID middleware: UUID v4 per request, in headers and log spans
-- [ ] TraceLayer: logs method, path, status, duration
-- [ ] Timeout layer (30s)
-- [ ] `GET /health/live` → `200` even when PostgreSQL is stopped
-- [ ] `GET /health/ready` → `200` (DB up) / `503` (DB stopped)
-- [ ] Docker Compose: Postgres (`pgvector:pg16-v0.8.0`), Redis, MinIO — all healthy
-- [ ] `minio-init` service creates `tenant-documents` bucket automatically (private)
-- [ ] CI: format, Clippy, migration step, DDL privilege check, unit tests, release build
-- [ ] README: reproducible from documented steps only; no undocumented manual steps
+- [x] `Cargo.toml` workspace with `resolver = "2"`
+- [x] `rust-toolchain.toml` pinned to stable
+- [x] All 7 crates compiling (`cargo build --workspace`)
+- [x] `.env.example` with **consistent** `DATABASE_URL` (app_runtime) and `DATABASE_MIGRATION_URL` (db_owner)
+- [x] `common-errors`: `AppError` with safe `IntoResponse`; no SQL details to clients
+- [x] `common-config`: typed config, fails fast on missing required values
+- [x] `common-telemetry`: JSON structured logging
+- [x] `common-database`: pool creation using `app_runtime` URL; `ping` function; **no `begin_tenant_tx`**
+- [x] `common-auth`, `common-storage`, `common-messaging`: compiling stubs
+- [x] Migration `001_foundation.sql`: extensions + two roles only; no domain tables
+- [x] `app_runtime` role created before migrations run
+- [x] `app_runtime` verified to lack DDL privileges
+- [x] `AppState` with `PgPool` and `Arc<AppConfig>`
+- [x] `main.rs`: migrations gated to `APP_ENV=development` only
+- [x] Request ID middleware: UUID v4 per request, in headers and log spans
+- [x] TraceLayer: logs method, path, status, duration
+- [x] Timeout layer (30s)
+- [x] `GET /health/live` → `200` even when PostgreSQL is stopped
+- [x] `GET /health/ready` → `200` (DB up) / `503` (DB stopped)
+- [x] Docker Compose: Postgres (`pgvector:pg16-v0.8.0`), Redis, MinIO — all healthy
+- [x] `minio-init` service creates `tenant-documents` bucket automatically (private)
+- [x] CI: format, Clippy, migration step, DDL privilege check, unit tests, release build
+- [x] README: reproducible from documented steps only; no undocumented manual steps
 
 ### Complete if time permits
-- [ ] Multi-stage Dockerfile with `cargo-chef`
-- [ ] `SQLX_OFFLINE=true` cache generated and committed
-- [ ] ADR-001, ADR-002, ADR-003 stubs in `docs/adr/`
+- [x] Multi-stage Dockerfile with `cargo-chef`
+- [x] `SQLX_OFFLINE=true` cache generated and committed
+- [x] ADR-001, ADR-002, ADR-003 stubs in `docs/adr/`
 
 ---
 
