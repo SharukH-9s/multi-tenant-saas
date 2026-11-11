@@ -4,5 +4,16 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Phase 2 dependencies will be added here
+common-errors = { path = "../common-errors" }
 
+argon2       = { workspace = true }
+base64       = { workspace = true }
+jsonwebtoken = { workspace = true }
+rand         = { workspace = true }
+serde        = { workspace = true }
+sha2         = { workspace = true }
+tokio        = { workspace = true }
+uuid         = { workspace = true }
+
+[dev-dependencies]
+serde_json   = { workspace = true }

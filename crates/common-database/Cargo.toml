@@ -4,9 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+common-auth   = { path = "../common-auth" }
 common-config = { path = "../common-config" }
 common-errors = { path = "../common-errors" }
 sqlx          = { workspace = true }
+uuid          = { workspace = true }
 
 [dev-dependencies]
+dotenvy       = { workspace = true }
 tokio         = { workspace = true }

@@ -9,6 +9,7 @@ members = [
   "crates/common-messaging",
   "crates/common-storage",
   "crates/common-telemetry",
+  "tests",
 ]
 
 [workspace.dependencies]
@@ -38,6 +39,19 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 anyhow = "1"
 # --- Error handling ---
 thiserror = "2"
+
+# --- Auth & crypto (Phase 2) ---
+argon2 = "0.6"
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
+rand = "0.10"
+sha2 = "0.11"
+base64 = "0.23"
+
+# --- Cache / rate limiting (Phase 2, Task 9) ---
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
+
+# --- Test helpers ---
+http-body-util = "0.1"
 
 # --- Configuration ---
 config = "0.15"

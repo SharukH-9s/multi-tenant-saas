@@ -1,4 +1,5 @@
 use axum::{
+    extract::{rejection::JsonRejection, FromRequest},
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
@@ -23,8 +24,17 @@ pub enum AppError {
     #[error("permission denied")]
     Forbidden,
 
-    #[error("conflict: {0}")]
-    Conflict(String),
+    #[error("bad request: {0}")]
+    BadRequest(String),
+
+    #[error("invalid credentials")]
+    InvalidCredentials,
+
+    #[error("conflict ({code}): {message}")]
+    Conflict { code: &'static str, message: String },
+
+    #[error("rate limited; retry after {retry_after_secs}s")]
+    TooManyRequests { retry_after_secs: u64 },
 
     #[error("validation error: {0}")]
     Validation(String),
@@ -38,6 +48,13 @@ pub enum AppError {
     #[error("internal error")]
     Internal(String),
 }
+
+/// Response extension marking a response as produced by an `AppError`.
+///
+/// The app's response layer uses it to find error envelopes and inject
+/// `error.request_id`, since `AppError` itself holds no request state.
+#[derive(Debug, Clone, Copy)]
+pub struct AppErrorMarker;
 
 /// Safe JSON error envelope sent to clients.
 /// Never includes internal details, SQL messages, or stack traces.
@@ -59,7 +76,10 @@ impl AppError {
             AppError::NotFound => "NOT_FOUND",
             AppError::Unauthorized => "UNAUTHORIZED",
             AppError::Forbidden => "FORBIDDEN",
-            AppError::Conflict(_) => "CONFLICT",
+            AppError::BadRequest(_) => "BAD_REQUEST",
+            AppError::InvalidCredentials => "INVALID_CREDENTIALS",
+            AppError::Conflict { code, .. } => code,
+            AppError::TooManyRequests { .. } => "RATE_LIMITED",
             AppError::Validation(_) => "VALIDATION_ERROR",
             AppError::Database(_) => "DATABASE_ERROR",
             AppError::ExternalService(_) => "SERVICE_UNAVAILABLE",
@@ -73,7 +93,10 @@ impl AppError {
             AppError::NotFound => StatusCode::NOT_FOUND,
             AppError::Unauthorized => StatusCode::UNAUTHORIZED,
             AppError::Forbidden => StatusCode::FORBIDDEN,
-            AppError::Conflict(_) => StatusCode::CONFLICT,
+            AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            AppError::InvalidCredentials => StatusCode::UNAUTHORIZED,
+            AppError::Conflict { .. } => StatusCode::CONFLICT,
+            AppError::TooManyRequests { .. } => StatusCode::TOO_MANY_REQUESTS,
             AppError::Validation(_) => StatusCode::UNPROCESSABLE_ENTITY,
             AppError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::ExternalService(_) => StatusCode::SERVICE_UNAVAILABLE,
@@ -85,7 +108,10 @@ impl AppError {
     fn safe_message(&self) -> String {
         match self {
             // These variants have user-visible context that is safe to surface
-            AppError::Conflict(msg) => msg.clone(),
+            AppError::Conflict { message, .. } => message.clone(),
+            AppError::BadRequest(msg) => msg.clone(),
+            AppError::InvalidCredentials => "Invalid email or password.".into(),
+            AppError::TooManyRequests { .. } => "Too many requests. Please try again later.".into(),
             AppError::Validation(msg) => msg.clone(),
             AppError::ExternalService(svc) => {
                 format!("The service '{}' is temporarily unavailable.", svc)
@@ -124,7 +150,16 @@ impl IntoResponse for AppError {
             },
         };
 
-        (status, Json(body)).into_response()
+        let mut response = (status, Json(body)).into_response();
+        if let AppError::TooManyRequests { retry_after_secs } = &self {
+            if let Ok(value) = axum::http::HeaderValue::from_str(&retry_after_secs.to_string()) {
+                response
+                    .headers_mut()
+                    .insert(axum::http::header::RETRY_AFTER, value);
+            }
+        }
+        response.extensions_mut().insert(AppErrorMarker);
+        response
     }
 }
 
@@ -139,6 +174,37 @@ impl From<sqlx::Error> for AppError {
     }
 }
 
+/// Maps axum's JSON rejections onto the error envelope.
+/// Serde's detailed messages are deliberately not echoed to clients.
+impl From<JsonRejection> for AppError {
+    fn from(rejection: JsonRejection) -> Self {
+        match rejection {
+            JsonRejection::JsonDataError(_) => {
+                AppError::Validation("The request body is invalid.".into())
+            }
+            JsonRejection::JsonSyntaxError(_) => {
+                AppError::BadRequest("The request body is not valid JSON.".into())
+            }
+            JsonRejection::MissingJsonContentType(_) => {
+                AppError::BadRequest("Expected `Content-Type: application/json`.".into())
+            }
+            _ => AppError::BadRequest("The request body could not be read.".into()),
+        }
+    }
+}
+
+/// Drop-in replacement for `axum::Json` as an extractor whose rejections use
+/// the standard error envelope.
+#[derive(FromRequest)]
+#[from_request(via(axum::Json), rejection(AppError))]
+pub struct ApiJson<T>(pub T);
+
+impl<T: Serialize> IntoResponse for ApiJson<T> {
+    fn into_response(self) -> Response {
+        Json(self.0).into_response()
+    }
+}
+
 impl From<std::io::Error> for AppError {
     fn from(e: std::io::Error) -> Self {
         AppError::Internal(format!("I/O error: {e}"))
@@ -149,6 +215,36 @@ impl From<std::io::Error> for AppError {
 mod tests {
     use super::*;
     use axum::http::StatusCode;
+
+    #[test]
+    fn conflict_uses_its_own_code_and_409() {
+        let err = AppError::Conflict {
+            code: "SLUG_TAKEN",
+            message: "Slug is taken.".into(),
+        };
+        assert_eq!(err.code(), "SLUG_TAKEN");
+        assert_eq!(err.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn invalid_credentials_maps_to_401() {
+        assert_eq!(
+            AppError::InvalidCredentials.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(AppError::InvalidCredentials.code(), "INVALID_CREDENTIALS");
+    }
+
+    #[test]
+    fn too_many_requests_sets_retry_after_and_marker() {
+        let res = AppError::TooManyRequests {
+            retry_after_secs: 7,
+        }
+        .into_response();
+        assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(res.headers()["retry-after"], "7");
+        assert!(res.extensions().get::<AppErrorMarker>().is_some());
+    }
 
     #[test]
     fn not_found_maps_to_404() {

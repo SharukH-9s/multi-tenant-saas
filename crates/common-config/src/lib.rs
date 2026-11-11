@@ -53,7 +53,19 @@ pub struct StorageConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthConfig {
     pub jwt_secret: String,
+    pub jwt_issuer: String,
+    pub jwt_audience: String,
     pub jwt_expiry_secs: u64,
+    pub refresh_token_ttl_secs: u64,
+    pub argon2_memory_kib: u32,
+    pub argon2_iterations: u32,
+    pub argon2_parallelism: u32,
+    /// Size of the semaphore bounding concurrent Argon2 hashes.
+    pub max_concurrent_hashes: usize,
+    pub rate_limit_window_secs: u64,
+    pub rate_limit_per_ip: u32,
+    pub rate_limit_per_email: u32,
+    pub trusted_proxy_hops: u8,
 }
 
 impl AppConfig {
@@ -108,7 +120,18 @@ impl AppConfig {
             },
             auth: AuthConfig {
                 jwt_secret: required("JWT_SECRET")?,
-                jwt_expiry_secs: number(&get_env, "JWT_EXPIRY_SECS", 3600)?,
+                jwt_issuer: text("JWT_ISSUER", "tenant-saas"),
+                jwt_audience: text("JWT_AUDIENCE", "tenant-saas-api"),
+                jwt_expiry_secs: number(&get_env, "JWT_EXPIRY_SECS", 900)?,
+                refresh_token_ttl_secs: number(&get_env, "REFRESH_TOKEN_TTL_SECS", 1_209_600)?,
+                argon2_memory_kib: number(&get_env, "ARGON2_MEMORY_KIB", 19_456)?,
+                argon2_iterations: number(&get_env, "ARGON2_ITERATIONS", 2)?,
+                argon2_parallelism: number(&get_env, "ARGON2_PARALLELISM", 1)?,
+                max_concurrent_hashes: number(&get_env, "AUTH_MAX_CONCURRENT_HASHES", 4)?,
+                rate_limit_window_secs: number(&get_env, "AUTH_RATE_LIMIT_WINDOW_SECS", 60)?,
+                rate_limit_per_ip: number(&get_env, "AUTH_RATE_LIMIT_PER_IP", 10)?,
+                rate_limit_per_email: number(&get_env, "AUTH_RATE_LIMIT_PER_EMAIL", 5)?,
+                trusted_proxy_hops: number(&get_env, "AUTH_RATE_LIMIT_TRUSTED_PROXY_HOPS", 0u8)?,
             },
         };
 
@@ -134,6 +157,54 @@ impl AppConfig {
             return Err(ConfigError::Validation(
                 "auth.jwt_secret".into(),
                 "must be at least 32 characters long".into(),
+            ));
+        }
+        let positive: [(&str, u64); 8] = [
+            ("auth.jwt_expiry_secs", self.auth.jwt_expiry_secs),
+            (
+                "auth.refresh_token_ttl_secs",
+                self.auth.refresh_token_ttl_secs,
+            ),
+            ("auth.argon2_memory_kib", self.auth.argon2_memory_kib.into()),
+            ("auth.argon2_iterations", self.auth.argon2_iterations.into()),
+            (
+                "auth.argon2_parallelism",
+                self.auth.argon2_parallelism.into(),
+            ),
+            (
+                "auth.max_concurrent_hashes",
+                self.auth.max_concurrent_hashes as u64,
+            ),
+            (
+                "auth.rate_limit_window_secs",
+                self.auth.rate_limit_window_secs,
+            ),
+            ("auth.rate_limit_per_ip", self.auth.rate_limit_per_ip.into()),
+        ];
+        for (field, value) in positive {
+            if value == 0 {
+                return Err(ConfigError::Validation(
+                    field.into(),
+                    "must be greater than 0".into(),
+                ));
+            }
+        }
+        if self.auth.rate_limit_per_email == 0 {
+            return Err(ConfigError::Validation(
+                "auth.rate_limit_per_email".into(),
+                "must be greater than 0".into(),
+            ));
+        }
+        if self.auth.trusted_proxy_hops > 10 {
+            return Err(ConfigError::Validation(
+                "auth.trusted_proxy_hops".into(),
+                "must be between 0 and 10".into(),
+            ));
+        }
+        if self.auth.jwt_issuer.trim().is_empty() || self.auth.jwt_audience.trim().is_empty() {
+            return Err(ConfigError::Validation(
+                "auth.jwt_issuer/jwt_audience".into(),
+                "must not be empty".into(),
             ));
         }
         Ok(())
@@ -181,7 +252,41 @@ mod tests {
         );
         assert_eq!(cfg.database.max_connections, 10);
         assert_eq!(cfg.storage.endpoint, "http://localhost:9000");
-        assert_eq!(cfg.auth.jwt_expiry_secs, 3600);
+        assert_eq!(cfg.auth.jwt_expiry_secs, 900);
+        assert_eq!(cfg.auth.jwt_issuer, "tenant-saas");
+        assert_eq!(cfg.auth.jwt_audience, "tenant-saas-api");
+        assert_eq!(cfg.auth.refresh_token_ttl_secs, 1_209_600);
+        assert_eq!(cfg.auth.argon2_memory_kib, 19_456);
+        assert_eq!(cfg.auth.argon2_iterations, 2);
+        assert_eq!(cfg.auth.argon2_parallelism, 1);
+        assert_eq!(cfg.auth.max_concurrent_hashes, 4);
+        assert_eq!(cfg.auth.rate_limit_per_ip, 10);
+        assert_eq!(cfg.auth.rate_limit_per_email, 5);
+        assert_eq!(cfg.auth.trusted_proxy_hops, 0);
+    }
+
+    #[test]
+    fn auth_overrides_are_applied() {
+        let mut env = mock_env();
+        env.insert("JWT_ISSUER", "other");
+        env.insert("JWT_EXPIRY_SECS", "60");
+        env.insert("ARGON2_ITERATIONS", "3");
+
+        let cfg = load(&env).unwrap();
+
+        assert_eq!(cfg.auth.jwt_issuer, "other");
+        assert_eq!(cfg.auth.jwt_expiry_secs, 60);
+        assert_eq!(cfg.auth.argon2_iterations, 3);
+    }
+
+    #[test]
+    fn fails_when_max_concurrent_hashes_is_zero() {
+        let mut env = mock_env();
+        env.insert("AUTH_MAX_CONCURRENT_HASHES", "0");
+
+        assert!(
+            matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "auth.max_concurrent_hashes")
+        );
     }
 
     #[test]
@@ -229,6 +334,15 @@ mod tests {
 
         assert!(
             matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "database.max_connections")
+        );
+    }
+
+    #[test]
+    fn fails_when_trusted_proxy_hops_exceeds_10() {
+        let mut env = mock_env();
+        env.insert("AUTH_RATE_LIMIT_TRUSTED_PROXY_HOPS", "11");
+        assert!(
+            matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "auth.trusted_proxy_hops")
         );
     }
 }
