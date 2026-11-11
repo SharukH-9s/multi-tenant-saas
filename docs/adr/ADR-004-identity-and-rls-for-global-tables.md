@@ -24,7 +24,7 @@ Transactions utilize two transaction-local GUC settings (`set_config(..., true)`
 - `app.current_tenant_id`: Scopes queries to the active tenant (`begin_tenant_tx`).
 
 Table-by-table RLS design:
-- `tenants`: `ENABLE` and `FORCE ROW LEVEL SECURITY`. Accessible if `id = app_tenant_id()` OR user has an active membership.
+- `tenants`: `ENABLE` and `FORCE ROW LEVEL SECURITY`. Accessible if `id = app_tenant_id()` OR user has an active or invited membership (allowing invited users to inspect tenant name/slug for pending invitations).
 - `memberships`: `ENABLE` and `FORCE ROW LEVEL SECURITY`. Accessible if `tenant_id = app_tenant_id()` OR `user_id = app_user_id()`. No policies reference `tenants` directly, preventing recursion.
 - `users`: `ENABLE ROW LEVEL SECURITY` (without `FORCE`). `SELECT` and `UPDATE` allowed only for `id = app_user_id()`. Non-FORCE allows SECURITY DEFINER functions owned by `db_owner` to look up credentials and member directories while preventing `app_runtime` from directly scanning table rows.
 - `refresh_tokens`: Not tenant data. Looked up strictly by SHA-256 hash of a 256-bit random secret. Rotation is atomic, and reuse of a previously rotated token revokes the entire token family.

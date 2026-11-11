@@ -58,8 +58,7 @@ local function check_bucket(key, capacity)
     -- First request: start full minus this one request.
     tokens = capacity - 1.0
     ts     = now
-    redis.call('HMSET', key, 'tokens', 'ts', ts)
-    redis.call('HSET', key, 'tokens', tokens)
+    redis.call('HMSET', key, 'tokens', tokens, 'ts', ts)
     redis.call('EXPIRE', key, math.ceil(window * 2))
     return 0, 0
   end

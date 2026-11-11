@@ -193,7 +193,7 @@ CREATE POLICY tenants_select ON tenants FOR SELECT
             SELECT 1 FROM memberships m
              WHERE m.tenant_id = tenants.id
                AND m.user_id = (SELECT app_user_id())
-               AND m.status = 'active'
+               AND m.status IN ('active', 'invited')
         )
     );
 CREATE POLICY tenants_insert ON tenants FOR INSERT

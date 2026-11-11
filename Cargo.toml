@@ -56,3 +56,10 @@ http-body-util = "0.1"
 # --- Configuration ---
 config = "0.15"
 dotenvy = "0.15"
+
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.test.package.argon2]
+opt-level = 3
+
