@@ -18,7 +18,9 @@ use common_config::AppConfig;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use sqlx::{postgres::PgPoolOptions, PgPool, Postgres, Transaction};
-use tenant_saas::{app_state::AppState, routes::build_router};
+use tenant_saas::{
+    app_state::AppState, repositories::document_repo::DocumentRow, routes::build_router,
+};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -125,7 +127,7 @@ impl TestApp {
                 .clone()
                 .or_else(|| std::env::var("REDIS_URL").ok()),
             _ => std::env::var(key).ok().or_else(|| match key {
-                "OBJECT_STORAGE_ACCESS_KEY" | "OBJECT_STORAGE_SECRET_KEY" => Some("test".into()),
+                "OBJECT_STORAGE_BACKEND" => Some("memory".into()),
                 "JWT_SECRET" => Some("test-secret-".repeat(4)),
                 _ => None,
             }),
@@ -157,8 +159,11 @@ impl TestApp {
             None => None,
         };
 
-        let state =
+        let mut state =
             AppState::new(runtime_pool.clone(), Arc::new(config)).expect("valid test config");
+        if let Some(ref owner) = owner_pool {
+            state = state.with_owner_pool(owner.clone());
+        }
 
         // Unique client IP per test app instance so tests running concurrently don't share buckets
         let client_ip = format!(
@@ -318,7 +323,7 @@ impl TestApp {
     /// Owner-pool transaction with the same settings the app would set. RLS still
     /// applies to `db_owner` on `tenants` and `memberships` (FORCE), so fixtures
     /// must set them too.
-    async fn owner_scoped_tx(
+    pub async fn owner_scoped_tx(
         &self,
         tenant_id: Uuid,
         user_id: Uuid,
@@ -448,6 +453,159 @@ impl TestApp {
         .execute(self.owner())
         .await
         .expect("expire tokens");
+    }
+
+    /// Sends a raw multipart POST request.
+    pub async fn post_multipart(
+        &self,
+        path: &str,
+        token: &str,
+        boundary: &str,
+        body: Vec<u8>,
+    ) -> (StatusCode, Value) {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(path)
+            .header("authorization", format!("Bearer {token}"))
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .header("x-forwarded-for", format!("{}, 10.0.0.1", self.client_ip))
+            .body(Body::from(body))
+            .expect("valid request");
+
+        let response = self
+            .router
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("router is infallible");
+        let status = response.status();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("read body")
+            .to_bytes();
+        let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, json)
+    }
+
+    /// Builds a multipart body by hand and posts it to the documents endpoint.
+    pub async fn upload_file(
+        &self,
+        tenant_id: Uuid,
+        token: &str,
+        filename: &str,
+        file_bytes: &[u8],
+        title: Option<&str>,
+    ) -> (StatusCode, Value) {
+        let boundary = "------------------------boundary1234567890";
+        let mut body = Vec::new();
+
+        if let Some(t) = title {
+            body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+            body.extend_from_slice(b"Content-Disposition: form-data; name=\"title\"\r\n\r\n");
+            body.extend_from_slice(t.as_bytes());
+            body.extend_from_slice(b"\r\n");
+        }
+
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n")
+                .as_bytes(),
+        );
+        let ct = if filename.ends_with(".pdf") {
+            "application/pdf"
+        } else if filename.ends_with(".txt") {
+            "text/plain"
+        } else if filename.ends_with(".md") {
+            "text/markdown"
+        } else {
+            "application/octet-stream"
+        };
+        body.extend_from_slice(format!("Content-Type: {ct}\r\n\r\n").as_bytes());
+        body.extend_from_slice(file_bytes);
+        body.extend_from_slice(b"\r\n");
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+        let path = format!("/api/v1/tenants/{tenant_id}/documents");
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(path)
+            .header("authorization", format!("Bearer {token}"))
+            .header(
+                "content-type",
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .header("x-forwarded-for", format!("{}, 10.0.0.1", self.client_ip))
+            .body(Body::from(body))
+            .expect("valid request");
+
+        let response = self
+            .router
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("router is infallible");
+        let status = response.status();
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("read body")
+            .to_bytes();
+        let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, json)
+    }
+
+    /// Uploads a small valid text file and returns its document id.
+    pub async fn create_document(&self, tenant_id: Uuid, token: &str) -> Uuid {
+        let (status, body) = self
+            .upload_file(
+                tenant_id,
+                token,
+                "test.txt",
+                b"Hello, world! This is a test document.",
+                Some("Test Document"),
+            )
+            .await;
+        assert_eq!(
+            status,
+            StatusCode::ACCEPTED,
+            "create_document failed: {body}"
+        );
+        body["id"]
+            .as_str()
+            .expect("id is string")
+            .parse()
+            .expect("valid uuid")
+    }
+
+    /// Reads documents straight from the owner pool, bypassing the API and RLS.
+    pub async fn document_row(&self, tenant_id: Uuid, id: Uuid) -> Option<DocumentRow> {
+        let mut tx = self.owner_scoped_tx(tenant_id, Uuid::nil()).await;
+        let row = sqlx::query_as::<_, DocumentRow>(
+            "SELECT id, tenant_id, uploaded_by, title, original_filename, \
+                    content_hash, object_key, mime_type, size_bytes, \
+                    status, failure_code, failure_detail, chunk_count, \
+                    created_at, updated_at, deleted_at \
+               FROM documents \
+              WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(id)
+        .bind(tenant_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .expect("query document");
+        tx.commit().await.expect("commit");
+        row
+    }
+
+    /// True when the key exists in the app's storage backend.
+    pub async fn object_exists(&self, key: &str) -> bool {
+        self.state.storage.get(key).await.is_ok()
     }
 }
 

@@ -20,11 +20,12 @@ use crate::{app_state::AppState, handlers, middleware::inject_request_id};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Versioned API routes. Feature routers are merged here.
-fn api_v1() -> Router<AppState> {
+fn api_v1(state: &AppState) -> Router<AppState> {
     // Tenant sub-resources are nested under /tenants/{tenant_id} so that the
     // TenantCtx extractor can resolve the membership from the path parameter.
-    let tenant_sub =
-        handlers::members::router().merge(handlers::invitations::tenant_invitations_router());
+    let tenant_sub = handlers::members::router()
+        .merge(handlers::invitations::tenant_invitations_router())
+        .merge(handlers::documents::router(state));
 
     Router::new()
         .nest("/auth", handlers::auth::router())
@@ -71,10 +72,12 @@ pub fn build_router(state: AppState) -> Router {
         // Innermost: sees the request id set above and rewrites AppError bodies.
         .layer(from_fn(inject_request_id));
 
+    let api = api_v1(&state);
+
     Router::new()
         .route("/health/live", get(handlers::health::liveness))
         .route("/health/ready", get(handlers::health::readiness))
-        .nest("/api/v1", api_v1()) //
+        .nest("/api/v1", api) //
         .fallback(not_found)
         .layer(middleware)
         .with_state(state)
@@ -95,7 +98,7 @@ mod tests {
     fn state_without_database() -> AppState {
         let env = |key: &str| match key {
             "DATABASE_URL" => Some("postgres://u:p@127.0.0.1:1/db".to_string()),
-            "OBJECT_STORAGE_ACCESS_KEY" | "OBJECT_STORAGE_SECRET_KEY" => Some("x".to_string()),
+            "OBJECT_STORAGE_BACKEND" => Some("memory".to_string()),
             "JWT_SECRET" => Some("x".repeat(32)),
             _ => None,
         };
@@ -157,6 +160,29 @@ mod tests {
             get_status("/api/v1/invitations").await,
             StatusCode::UNAUTHORIZED,
         );
+    }
+
+    #[tokio::test]
+    async fn document_routes_exist_and_require_auth() {
+        let id = uuid::Uuid::new_v4();
+        // GET /tenants/:id/documents — missing token → 401
+        assert_eq!(
+            get_status(&format!("/api/v1/tenants/{id}/documents")).await,
+            StatusCode::UNAUTHORIZED,
+        );
+
+        // POST /tenants/:id/documents — missing token → 401
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/tenants/{id}/documents"))
+            .body(Body::empty())
+            .unwrap();
+        let status = build_router(state_without_database())
+            .oneshot(req)
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

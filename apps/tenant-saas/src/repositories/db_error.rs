@@ -49,5 +49,65 @@ pub fn map_db_error(error: sqlx::Error) -> AppError {
             }
         }
     }
+    classify_sqlx_error(error)
+}
+
+/// Classifies a raw sqlx error into the appropriate [`AppError`] variant.
+///
+/// Connection-level failures — pool timeout, I/O errors, and SQLSTATE class
+/// `08` (connection exception) — become [`AppError::ExternalService`] which
+/// maps to **503 Service Unavailable**, signalling a temporary infrastructure
+/// problem rather than an application bug (§16.3 / D12).
+///
+/// All other errors (including row-not-found, constraint violations, and query
+/// errors) fall back to the standard [`AppError::from`] conversion so that
+/// existing behaviour is unchanged.
+pub fn classify_sqlx_error(error: sqlx::Error) -> AppError {
+    match &error {
+        // Pool exhausted waiting for a connection — transient infrastructure issue.
+        sqlx::Error::PoolTimedOut => {
+            tracing::warn!("database pool timed out");
+            return AppError::ExternalService("database".into());
+        }
+        // TCP / TLS level failure — the server is unreachable.
+        sqlx::Error::Io(_) => {
+            tracing::warn!(error = %error, "database I/O error");
+            return AppError::ExternalService("database".into());
+        }
+        // SQLSTATE class 08 = "Connection Exception".
+        sqlx::Error::Database(db_err) => {
+            let is_connection_class = db_err.code().map(|c| c.starts_with("08")).unwrap_or(false);
+            if is_connection_class {
+                tracing::warn!(sqlstate = ?db_err.code(), "database connection exception");
+                return AppError::ExternalService("database".into());
+            }
+        }
+        _ => {}
+    }
     AppError::from(error)
+}
+
+#[cfg(test)]
+mod classify_tests {
+    use super::*;
+    use common_errors::AppError;
+
+    #[test]
+    fn pool_timed_out_becomes_external_service() {
+        let err = classify_sqlx_error(sqlx::Error::PoolTimedOut);
+        assert!(matches!(err, AppError::ExternalService(_)));
+    }
+
+    #[test]
+    fn row_not_found_stays_not_found() {
+        let err = classify_sqlx_error(sqlx::Error::RowNotFound);
+        assert!(matches!(err, AppError::NotFound));
+    }
+
+    #[test]
+    fn pool_closed_stays_database_error() {
+        // PoolClosed is a logic error, not a transient infra problem.
+        let err = classify_sqlx_error(sqlx::Error::PoolClosed);
+        assert!(matches!(err, AppError::Database(_)));
+    }
 }

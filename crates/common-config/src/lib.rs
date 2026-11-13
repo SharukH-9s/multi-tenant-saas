@@ -46,8 +46,23 @@ pub struct StorageConfig {
     pub endpoint: String,
     pub bucket: String,
     pub region: String,
-    pub access_key: String,
-    pub secret_key: String,
+    /// Only present when `backend` is `s3`.
+    pub access_key: Option<String>,
+    /// Only present when `backend` is `s3`.
+    pub secret_key: Option<String>,
+    /// One of `s3`, `local`, `memory`. Defaults to `s3`.
+    pub backend: String,
+    /// Used when `backend = local`. Defaults to `./.local-storage`.
+    pub local_path: String,
+    /// Whether to allow plain HTTP connections to the storage endpoint.
+    /// Must be `false` in production when the endpoint is not HTTPS.
+    pub allow_http: bool,
+    /// Minimum multipart part size in bytes. At least 5 MiB, at most 64 MiB. Default 8 MiB.
+    pub part_size_bytes: usize,
+    /// Maximum upload size in bytes. Default 20 MiB, max 100 MiB.
+    pub max_upload_bytes: u64,
+    /// How long to retain orphaned objects before the reconciler removes them. Default 86400s.
+    pub orphan_retention_secs: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,12 +126,41 @@ impl AppConfig {
             redis: RedisConfig {
                 url: text("REDIS_URL", "redis://localhost:6379"),
             },
-            storage: StorageConfig {
-                endpoint: text("OBJECT_STORAGE_ENDPOINT", "http://localhost:9000"),
-                bucket: text("OBJECT_STORAGE_BUCKET", "tenant-documents"),
-                region: text("OBJECT_STORAGE_REGION", "us-east-1"),
-                access_key: required("OBJECT_STORAGE_ACCESS_KEY")?,
-                secret_key: required("OBJECT_STORAGE_SECRET_KEY")?,
+            storage: {
+                let backend = text("OBJECT_STORAGE_BACKEND", "s3");
+                let access_key = if backend == "s3" {
+                    Some(required("OBJECT_STORAGE_ACCESS_KEY")?)
+                } else {
+                    get_env("OBJECT_STORAGE_ACCESS_KEY")
+                };
+                let secret_key = if backend == "s3" {
+                    Some(required("OBJECT_STORAGE_SECRET_KEY")?)
+                } else {
+                    get_env("OBJECT_STORAGE_SECRET_KEY")
+                };
+                StorageConfig {
+                    endpoint: text("OBJECT_STORAGE_ENDPOINT", "http://localhost:9000"),
+                    bucket: text("OBJECT_STORAGE_BUCKET", "tenant-documents"),
+                    region: text("OBJECT_STORAGE_REGION", "us-east-1"),
+                    access_key,
+                    secret_key,
+                    backend,
+                    local_path: text("OBJECT_STORAGE_LOCAL_PATH", "./.local-storage"),
+                    allow_http: get_env("OBJECT_STORAGE_ALLOW_HTTP")
+                        .map(|v| v != "false" && v != "0")
+                        .unwrap_or(true),
+                    part_size_bytes: number(
+                        &get_env,
+                        "OBJECT_STORAGE_PART_SIZE_BYTES",
+                        8_388_608usize,
+                    )?,
+                    max_upload_bytes: number(&get_env, "MAX_UPLOAD_BYTES", 20_971_520u64)?,
+                    orphan_retention_secs: number(
+                        &get_env,
+                        "STORAGE_ORPHAN_RETENTION_SECS",
+                        86_400u64,
+                    )?,
+                }
             },
             auth: AuthConfig {
                 jwt_secret: required("JWT_SECRET")?,
@@ -207,6 +251,42 @@ impl AppConfig {
                 "must not be empty".into(),
             ));
         }
+        // --- storage ---
+        match self.storage.backend.as_str() {
+            "s3" | "local" | "memory" => {}
+            other => {
+                return Err(ConfigError::Validation(
+                    "storage.backend".into(),
+                    format!("must be one of s3, local, memory; got '{other}'"),
+                ));
+            }
+        }
+        if self.storage.backend == "local" && self.storage.local_path.trim().is_empty() {
+            return Err(ConfigError::Validation(
+                "storage.local_path".into(),
+                "must not be empty when backend is local".into(),
+            ));
+        }
+        const MIN_PART: usize = 5 * 1024 * 1024; // 5 MiB
+        const MAX_PART: usize = 64 * 1024 * 1024; // 64 MiB
+        if self.storage.part_size_bytes < MIN_PART || self.storage.part_size_bytes > MAX_PART {
+            return Err(ConfigError::Validation(
+                "storage.part_size_bytes".into(),
+                "must be between 5 MiB (5242880) and 64 MiB (67108864)".into(),
+            ));
+        }
+        if self.storage.max_upload_bytes == 0 || self.storage.max_upload_bytes > 104_857_600 {
+            return Err(ConfigError::Validation(
+                "storage.max_upload_bytes".into(),
+                "must be between 1 and 104857600 (100 MiB)".into(),
+            ));
+        }
+        if self.storage.orphan_retention_secs == 0 {
+            return Err(ConfigError::Validation(
+                "storage.orphan_retention_secs".into(),
+                "must be greater than 0".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -252,6 +332,11 @@ mod tests {
         );
         assert_eq!(cfg.database.max_connections, 10);
         assert_eq!(cfg.storage.endpoint, "http://localhost:9000");
+        assert_eq!(cfg.storage.backend, "s3");
+        assert_eq!(cfg.storage.access_key.as_deref(), Some("minioadmin"));
+        assert_eq!(cfg.storage.max_upload_bytes, 20_971_520);
+        assert_eq!(cfg.storage.part_size_bytes, 8_388_608);
+        assert_eq!(cfg.storage.orphan_retention_secs, 86400);
         assert_eq!(cfg.auth.jwt_expiry_secs, 900);
         assert_eq!(cfg.auth.jwt_issuer, "tenant-saas");
         assert_eq!(cfg.auth.jwt_audience, "tenant-saas-api");
@@ -343,6 +428,33 @@ mod tests {
         env.insert("AUTH_RATE_LIMIT_TRUSTED_PROXY_HOPS", "11");
         assert!(
             matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "auth.trusted_proxy_hops")
+        );
+    }
+
+    #[test]
+    fn memory_backend_does_not_require_storage_keys() {
+        let mut env = mock_env();
+        env.remove("OBJECT_STORAGE_ACCESS_KEY");
+        env.remove("OBJECT_STORAGE_SECRET_KEY");
+        env.insert("OBJECT_STORAGE_BACKEND", "memory");
+        let cfg = load(&env).unwrap();
+        assert_eq!(cfg.storage.backend, "memory");
+        assert!(cfg.storage.access_key.is_none());
+    }
+
+    #[test]
+    fn invalid_storage_backend_fails_validation() {
+        let mut env = mock_env();
+        env.insert("OBJECT_STORAGE_BACKEND", "gcs");
+        assert!(matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "storage.backend"));
+    }
+
+    #[test]
+    fn part_size_below_5mib_fails_validation() {
+        let mut env = mock_env();
+        env.insert("OBJECT_STORAGE_PART_SIZE_BYTES", "1024");
+        assert!(
+            matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "storage.part_size_bytes")
         );
     }
 }

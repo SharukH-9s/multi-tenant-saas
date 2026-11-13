@@ -4,8 +4,10 @@
 //! into these types first, so the rest of the code never sees invalid input.
 //! The rules mirror the CHECK constraints in `002_identity.sql`.
 
+pub mod document;
 pub mod tenant;
 pub mod user;
 
+pub use document::{ContentHash, DocumentStatus, DocumentTitle, OriginalFilename, SupportedFormat};
 pub use tenant::{Slug, TenantName};
 pub use user::{Email, Password};

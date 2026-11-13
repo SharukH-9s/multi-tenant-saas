@@ -6,6 +6,7 @@
 //! resolver query so far; Task 8 adds member management.
 
 pub mod db_error;
+pub mod document_repo;
 pub mod membership_repo;
 pub mod refresh_token_repo;
 pub mod tenant_repo;

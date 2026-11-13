@@ -30,6 +30,15 @@ jobs:
             exit 1
           fi
           echo "TenantContext constructor grep guard: PASS"
+      - name: Verify object_key never appears in handlers
+        run: |
+          count=$(grep -rn "object_key" apps/tenant-saas/src/handlers/ | wc -l)
+          if [ "$count" -ne 0 ]; then
+            echo "FORBIDDEN: object_key referenced in handlers/ — must not appear in response DTOs!"
+            grep -rn "object_key" apps/tenant-saas/src/handlers/
+            exit 1
+          fi
+          echo "object_key handler guard: PASS"
 
   test:
     name: Tests
@@ -51,6 +60,15 @@ jobs:
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 3s --health-retries 5
+      minio:
+        image: pgsty/silo:RELEASE.2026-11-09T00-00-00Z
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        ports: ["9000:9000"]
+        options: >-
+          --health-cmd "curl -f http://localhost:9000/minio/health/live"
+          --health-interval 10s --health-timeout 5s --health-retries 5
     env:
       # Bootstrap superuser for role initialization
       BOOTSTRAP_URL: postgres://postgres:postgres_password@localhost:5432/tenant_saas_test
@@ -71,18 +89,43 @@ jobs:
         run: sqlx migrate run --source apps/tenant-saas/migrations
         env:
           DATABASE_URL: ${{ env.MIGRATION_URL }}
+      - name: Initialize MinIO bucket
+        run: |
+          docker run --rm --network host pgsty/silo:RELEASE.2026-11-09T00-00-00Z \
+            /bin/sh -c "
+              mcli alias set local http://localhost:9000 minioadmin minioadmin &&
+              mcli mb --ignore-existing local/tenant-documents &&
+              mcli anonymous set none local/tenant-documents
+            "
+      - name: Verify MinIO bucket is private
+        run: |
+          # Upload a probe object then confirm anonymous GET is 403
+          docker run --rm --network host pgsty/silo:RELEASE.2026-11-09T00-00-00Z \
+            /bin/sh -c "
+              mcli alias set local http://localhost:9000 minioadmin minioadmin &&
+              echo probe | mcli pipe local/tenant-documents/ci-private-probe
+            "
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            "http://localhost:9000/tenant-documents/ci-private-probe")
+          [ "$code" = "403" ] || { echo "bucket is not private: got HTTP $code"; exit 1; }
+          echo "MinIO private bucket assertion: PASS"
       - name: RLS sanity
         run: |
           psql "$MIGRATION_URL" -c "
             SELECT relname, relrowsecurity, relforcerowsecurity
             FROM pg_class
-            WHERE relname IN ('tenants', 'memberships', 'users');
+            WHERE relname IN ('tenants', 'memberships', 'users', 'documents');
           "
           # Verify app_runtime cannot select password_hash directly
           output=$(psql "$RUNTIME_URL" -c "SELECT password_hash FROM users;" 2>&1 || true)
           echo "$output"
           echo "$output" | grep -q "permission denied"
           echo "app_runtime password_hash denial: PASS"
+          # Verify app_runtime cannot DELETE documents
+          output=$(psql "$RUNTIME_URL" -c "DELETE FROM documents;" 2>&1 || true)
+          echo "$output"
+          echo "$output" | grep -q "permission denied"
+          echo "app_runtime DELETE documents denial: PASS"
       - name: Verify db_owner and app_runtime are NOT superusers
         run: |
           psql "$BOOTSTRAP_URL" -c "
@@ -113,6 +156,12 @@ jobs:
           # db_owner pool, used by integration tests for fixture seeding only
           DATABASE_MIGRATION_URL: ${{ env.MIGRATION_URL }}
           REDIS_URL: redis://localhost:6379
+          OBJECT_STORAGE_ENDPOINT: http://localhost:9000
+          OBJECT_STORAGE_BUCKET: tenant-documents
+          OBJECT_STORAGE_ACCESS_KEY: minioadmin
+          OBJECT_STORAGE_SECRET_KEY: minioadmin
+          OBJECT_STORAGE_BACKEND: s3
+          OBJECT_STORAGE_REGION: us-east-1
 
   build:
     name: Build Release Binary

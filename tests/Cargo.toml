@@ -24,12 +24,17 @@ common-auth      = { path = "../crates/common-auth" }
 common-config    = { path = "../crates/common-config" }
 common-errors    = { path = "../crates/common-errors" }
 common-database  = { path = "../crates/common-database" }
+common-storage   = { path = "../crates/common-storage" }
 
+async-trait      = { workspace = true }
 axum             = { workspace = true }
+bytes            = { workspace = true }
+chrono           = { workspace = true }
 dotenvy          = { workspace = true }
 http-body-util   = { workspace = true }
 redis            = { workspace = true }
 serde_json       = { workspace = true }
+sha2             = { workspace = true }
 sqlx             = { workspace = true }
 tokio            = { workspace = true }
 tower            = { workspace = true, features = ["util"] }

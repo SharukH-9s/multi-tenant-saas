@@ -21,13 +21,16 @@ portfolio-engine/
 │   ├── common-auth/        # Authentication, claims, Argon2id, JWT & TenantContext
 │   ├── common-telemetry/   # Structured logging & tracing
 │   ├── common-database/    # PostgreSQL connection pool and scoped transaction helpers
-│   ├── common-storage/     # Object storage abstraction (Phase 3 stub)
+│   ├── common-storage/     # Object storage abstraction (S3/MinIO, local FS, in-memory)
 │   └── common-messaging/   # Redis Streams producer/consumer helpers (Phase 4 stub)
 ├── apps/
 │   └── tenant-saas/        # Axum API (migrations live in `migrations/`)
 ├── tests/                  # Integration and security test suites
 ├── infra/                  # Docker Compose and Postgres init scripts
-└── docs/adr/               # Architecture Decision Records
+└── docs/
+    ├── adr/                # Architecture Decision Records (ADR-001 – ADR-006)
+    ├── api/                # HTTP API reference (documents.md)
+    └── runbooks/           # Operational runbooks (orphan-cleanup.md)
 ```
 
 ## Quick Start
@@ -60,6 +63,32 @@ curl http://localhost:8080/health/ready  # 200 {"status":"ready","db":"ok"}
 ```
 
 `/health/ready` returns `503` while PostgreSQL is down; `/health/live` stays `200`.
+
+### Upload a Document
+
+After logging in and creating a tenant, upload files via multipart form:
+
+```sh
+# Log in and capture the access token
+TOKENS=$(curl -s -X POST http://localhost:8080/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"alice@example.com","password":"correct-horse-battery"}')
+ACCESS_TOKEN=$(echo $TOKENS | grep -o '"access_token":"[^"]*' | cut -d'"' -f4)
+
+TENANT_ID=<your-tenant-uuid>
+
+# Upload a document (multipart/form-data)
+curl -X POST http://localhost:8080/api/v1/tenants/$TENANT_ID/documents \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -F 'title=Q4 Report' \
+  -F 'file=@report.pdf'
+
+# List uploaded documents
+curl http://localhost:8080/api/v1/tenants/$TENANT_ID/documents \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+Re-uploading the same file bytes returns `200 OK` with the existing document record (content-addressed deduplication via SHA-256).
 
 ### Auth & Multi-Tenancy Quick-Start
 
@@ -123,6 +152,36 @@ curl http://localhost:8080/api/v1/tenants/$TENANT_ID \
   -- Run as db_owner
   UPDATE refresh_tokens SET revoked_at = now() WHERE user_id = '<user-id>' AND revoked_at IS NULL;
   ```
+
+### Reconcile Orphaned Objects
+
+The reconciler sweeps for objects in S3 that have no corresponding database row (e.g., after a failed upload) and cleans up documents stuck in a `deleting` state.
+
+```sh
+# Run one reconciliation pass (dry-run: false — will delete confirmed orphans)
+./tenant-saas-api reconcile-orphans
+
+# Schedule nightly via cron (append output to a log file)
+0 2 * * * /path/to/tenant-saas-api reconcile-orphans >> /var/log/tenant-saas/reconcile.log 2>&1
+```
+
+The command exits `0` on success and prints a JSON `ReconcileReport`. See [`docs/runbooks/orphan-cleanup.md`](docs/runbooks/orphan-cleanup.md) for diagnostics and escalation guidance.
+
+## Environment Variables
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `DATABASE_URL` | URL | — | PostgreSQL connection string for `app_runtime` |
+| `DATABASE_MIGRATION_URL` | URL | — | PostgreSQL connection string for `db_owner` (migrations & fixtures) |
+| `REDIS_URL` | URL | — | Redis connection string |
+| `OBJECT_STORAGE_BACKEND` | string | `memory` | Storage backend: `s3`, `local`, or `memory` |
+| `OBJECT_STORAGE_ENDPOINT` | URL | — | S3/MinIO endpoint (required when backend is `s3`) |
+| `OBJECT_STORAGE_BUCKET` | string | — | Bucket name (required when backend is `s3` or `local`) |
+| `OBJECT_STORAGE_ACCESS_KEY` | string | — | S3 access key |
+| `OBJECT_STORAGE_SECRET_KEY` | string | — | S3 secret key |
+| `OBJECT_STORAGE_REGION` | string | `us-east-1` | S3 region |
+| `MAX_UPLOAD_BYTES` | integer | `20971520` | Maximum upload size in bytes (default 20 MiB) |
+| `STORAGE_ORPHAN_RETENTION_SECS` | integer | `86400` | Minimum age (seconds) before an untracked object is deleted by the reconciler |
 
 ### Clean restart
 

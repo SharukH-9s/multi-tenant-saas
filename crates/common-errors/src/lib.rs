@@ -39,6 +39,12 @@ pub enum AppError {
     #[error("validation error: {0}")]
     Validation(String),
 
+    #[error("payload too large")]
+    PayloadTooLarge,
+
+    #[error("unsupported media type: accepted formats are {accepted}")]
+    UnsupportedMediaType { accepted: &'static str },
+
     #[error("database error")]
     Database(#[source] sqlx::Error),
 
@@ -81,6 +87,8 @@ impl AppError {
             AppError::Conflict { code, .. } => code,
             AppError::TooManyRequests { .. } => "RATE_LIMITED",
             AppError::Validation(_) => "VALIDATION_ERROR",
+            AppError::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
+            AppError::UnsupportedMediaType { .. } => "UNSUPPORTED_MEDIA_TYPE",
             AppError::Database(_) => "DATABASE_ERROR",
             AppError::ExternalService(_) => "SERVICE_UNAVAILABLE",
             AppError::Internal(_) => "INTERNAL_ERROR",
@@ -98,6 +106,8 @@ impl AppError {
             AppError::Conflict { .. } => StatusCode::CONFLICT,
             AppError::TooManyRequests { .. } => StatusCode::TOO_MANY_REQUESTS,
             AppError::Validation(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            AppError::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            AppError::UnsupportedMediaType { .. } => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             AppError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AppError::ExternalService(_) => StatusCode::SERVICE_UNAVAILABLE,
             AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -113,6 +123,12 @@ impl AppError {
             AppError::InvalidCredentials => "Invalid email or password.".into(),
             AppError::TooManyRequests { .. } => "Too many requests. Please try again later.".into(),
             AppError::Validation(msg) => msg.clone(),
+            AppError::PayloadTooLarge => {
+                "The uploaded file exceeds the maximum allowed size.".into()
+            }
+            AppError::UnsupportedMediaType { accepted } => {
+                format!("Unsupported media type. Accepted formats: {}.", accepted)
+            }
             AppError::ExternalService(svc) => {
                 format!("The service '{}' is temporarily unavailable.", svc)
             }
@@ -282,5 +298,22 @@ mod tests {
     fn sqlx_row_not_found_converts_to_app_not_found() {
         let app_err: AppError = sqlx::Error::RowNotFound.into();
         assert!(matches!(app_err, AppError::NotFound));
+    }
+
+    #[test]
+    fn payload_too_large_maps_to_413() {
+        let err = AppError::PayloadTooLarge;
+        assert_eq!(err.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(err.code(), "PAYLOAD_TOO_LARGE");
+    }
+
+    #[test]
+    fn unsupported_media_type_maps_to_415() {
+        let err = AppError::UnsupportedMediaType {
+            accepted: "pdf, txt, md",
+        };
+        assert_eq!(err.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(err.code(), "UNSUPPORTED_MEDIA_TYPE");
+        assert!(err.safe_message().contains("pdf, txt, md"));
     }
 }

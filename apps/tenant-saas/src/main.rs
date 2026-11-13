@@ -21,8 +21,28 @@ async fn main() -> anyhow::Result<()> {
 
     let db = common_database::create_pool(&config.database).await?;
 
+    let mut state = AppState::new(db, Arc::new(config.clone()))?;
+    if let Some(migration_url) = config.database.migration_url.as_deref() {
+        if let Ok(owner_pool) = PgPool::connect(migration_url).await {
+            state = state.with_owner_pool(owner_pool);
+        }
+    }
+
+    if std::env::args().nth(1).as_deref() == Some("reconcile-orphans") {
+        tracing::info!("Running storage orphan reconciliation");
+        let report = tenant_saas::services::storage_reconciler::reconcile(&state, false).await?;
+        tracing::info!(
+            retried = report.retried,
+            deleted = report.deleted,
+            still_failing = report.still_failing,
+            swept = report.swept,
+            finalized = report.finalized,
+            "Reconcile report"
+        );
+        return Ok(());
+    }
+
     let addr = format!("{}:{}", config.app.host, config.app.port);
-    let state = AppState::new(db, Arc::new(config))?;
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!(address = %addr, "API listening");

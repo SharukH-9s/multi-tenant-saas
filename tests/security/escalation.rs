@@ -217,3 +217,155 @@ async fn member_and_viewer_cannot_manage_members() {
         assert_eq!(status, StatusCode::FORBIDDEN, "{resp}");
     }
 }
+
+#[tokio::test]
+async fn documents_role_matrix_upload_and_delete() {
+    let Some(app) = spawn().await else { return };
+
+    let owner = app.create_session().await;
+    let admin = app.create_session().await;
+    let member_a = app.create_session().await;
+    let member_b = app.create_session().await;
+    let viewer = app.create_session().await;
+
+    let tenant_id = app.create_tenant().await;
+    app.add_member(tenant_id, owner.user_id, "owner", "active")
+        .await;
+    app.add_member(tenant_id, admin.user_id, "admin", "active")
+        .await;
+    app.add_member(tenant_id, member_a.user_id, "member", "active")
+        .await;
+    app.add_member(tenant_id, member_b.user_id, "member", "active")
+        .await;
+    app.add_member(tenant_id, viewer.user_id, "viewer", "active")
+        .await;
+
+    // 1. Viewer cannot upload -> 403
+    let (status, resp) = app
+        .upload_file(
+            tenant_id,
+            &viewer.access_token,
+            "v.txt",
+            b"viewer content",
+            None,
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "Viewer cannot upload: {resp}"
+    );
+
+    // 2. Member can upload -> 202
+    let (status, body_a) = app
+        .upload_file(
+            tenant_id,
+            &member_a.access_token,
+            "doc_a.txt",
+            b"member a content",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "Member A upload: {body_a}");
+    let doc_a_id: Uuid = body_a["id"].as_str().unwrap().parse().unwrap();
+
+    let (status, body_b) = app
+        .upload_file(
+            tenant_id,
+            &member_b.access_token,
+            "doc_b.txt",
+            b"member b content",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "Member B upload: {body_b}");
+    let doc_b_id: Uuid = body_b["id"].as_str().unwrap().parse().unwrap();
+
+    // 3. Viewer cannot delete -> 403
+    let (status, resp) = app
+        .request(
+            Method::DELETE,
+            &format!("/api/v1/tenants/{tenant_id}/documents/{doc_a_id}"),
+            None,
+            Some(&viewer.access_token),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "Viewer cannot delete: {resp}"
+    );
+
+    // 4. Member B cannot delete Member A's document -> 403
+    let (status, resp) = app
+        .request(
+            Method::DELETE,
+            &format!("/api/v1/tenants/{tenant_id}/documents/{doc_a_id}"),
+            None,
+            Some(&member_b.access_token),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "Member B cannot delete Member A's doc: {resp}"
+    );
+
+    // 5. Member A can delete own document -> 204
+    let (status, _) = app
+        .request(
+            Method::DELETE,
+            &format!("/api/v1/tenants/{tenant_id}/documents/{doc_a_id}"),
+            None,
+            Some(&member_a.access_token),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "Member A can delete own document"
+    );
+
+    // Upload another document for Admin to delete
+    let (status, body_c) = app
+        .upload_file(
+            tenant_id,
+            &member_a.access_token,
+            "doc_c.txt",
+            b"member a doc 2",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let doc_c_id: Uuid = body_c["id"].as_str().unwrap().parse().unwrap();
+
+    // 6. Admin can delete any document (Member A's) -> 204
+    let (status, _) = app
+        .request(
+            Method::DELETE,
+            &format!("/api/v1/tenants/{tenant_id}/documents/{doc_c_id}"),
+            None,
+            Some(&admin.access_token),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "Admin can delete any document"
+    );
+
+    // 7. Owner can delete any document (Member B's) -> 204
+    let (status, _) = app
+        .request(
+            Method::DELETE,
+            &format!("/api/v1/tenants/{tenant_id}/documents/{doc_b_id}"),
+            None,
+            Some(&owner.access_token),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "Owner can delete any document"
+    );
+}

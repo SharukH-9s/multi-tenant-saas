@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: postgres # Bootstrap superuser only (executes /docker-entrypoint-initdb.d)
       POSTGRES_PASSWORD: postgres_password
     ports:
-      - "${POSTGRES_HOST_PORT:-5432}:5432"
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d:ro

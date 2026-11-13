@@ -4,5 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Phase 3 dependencies (e.g. object_store) will be added here
+common-config = { path = "../common-config" }
 
+object_store  = { workspace = true }
+bytes         = { workspace = true }
+async-trait   = { workspace = true }
+futures-util  = { workspace = true }
+thiserror     = { workspace = true }
+chrono        = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

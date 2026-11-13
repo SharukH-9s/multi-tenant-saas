@@ -187,6 +187,73 @@ async fn interleaved_tenants_on_single_connection_see_only_own_data() {
 }
 
 #[tokio::test]
+async fn interleaved_tenants_on_single_connection_see_only_own_documents() {
+    let Some(app) = spawn().await else { return };
+
+    let user_a = app.create_session().await;
+    let user_b = app.create_session().await;
+
+    let tenant_a = app.seed_membership(user_a.user_id, "owner", "active").await;
+    let tenant_b = app.seed_membership(user_b.user_id, "owner", "active").await;
+
+    let doc_a = app.create_document(tenant_a, &user_a.access_token).await;
+    let doc_b = app.create_document(tenant_b, &user_b.access_token).await;
+
+    let url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+    let pool = single_conn_pool(&url).await;
+
+    for _ in 0..5 {
+        // Query documents as Tenant A
+        {
+            let mut tx = pool.begin().await.unwrap();
+            sqlx::query("SELECT set_config('app.current_tenant_id', $1, true)")
+                .bind(tenant_a.to_string())
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+
+            let ids: Vec<(Uuid,)> = sqlx::query_as("SELECT id FROM documents")
+                .fetch_all(&mut *tx)
+                .await
+                .unwrap();
+            assert!(
+                ids.iter().any(|(id,)| *id == doc_a),
+                "Tenant A must see its own document"
+            );
+            assert!(
+                !ids.iter().any(|(id,)| *id == doc_b),
+                "Tenant A must NEVER see Tenant B document"
+            );
+            tx.commit().await.unwrap();
+        }
+
+        // Immediately query documents as Tenant B on the reused connection
+        {
+            let mut tx = pool.begin().await.unwrap();
+            sqlx::query("SELECT set_config('app.current_tenant_id', $1, true)")
+                .bind(tenant_b.to_string())
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+
+            let ids: Vec<(Uuid,)> = sqlx::query_as("SELECT id FROM documents")
+                .fetch_all(&mut *tx)
+                .await
+                .unwrap();
+            assert!(
+                ids.iter().any(|(id,)| *id == doc_b),
+                "Tenant B must see its own document"
+            );
+            assert!(
+                !ids.iter().any(|(id,)| *id == doc_a),
+                "Tenant B must NEVER see Tenant A document"
+            );
+            tx.commit().await.unwrap();
+        }
+    }
+}
+
+#[tokio::test]
 async fn concurrent_tasks_under_shared_pool_never_leak_tenant_context() {
     let Some(app) = spawn().await else { return };
 
