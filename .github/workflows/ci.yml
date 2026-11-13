@@ -60,15 +60,6 @@ jobs:
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 3s --health-retries 5
-      minio:
-        image: pgsty/silo:RELEASE.2026-11-09T00-00-00Z
-        env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadmin
-        ports: ["9000:9000"]
-        options: >-
-          --health-cmd "curl -f http://localhost:9000/minio/health/live"
-          --health-interval 10s --health-timeout 5s --health-retries 5
     env:
       # Bootstrap superuser for role initialization
       BOOTSTRAP_URL: postgres://postgres:postgres_password@localhost:5432/tenant_saas_test
@@ -89,6 +80,16 @@ jobs:
         run: sqlx migrate run --source apps/tenant-saas/migrations
         env:
           DATABASE_URL: ${{ env.MIGRATION_URL }}
+      - name: Start MinIO
+        run: |
+          docker run -d \
+            --name minio \
+            --network host \
+            -e "MINIO_ROOT_USER=minioadmin" \
+            -e "MINIO_ROOT_PASSWORD=minioadmin" \
+            pgsty/silo:RELEASE.2026-11-09T00-00-00Z \
+            server /data --console-address ":9001"
+          timeout 30s bash -c 'until curl -sf http://localhost:9000/minio/health/live; do sleep 1; done'
       - name: Initialize MinIO bucket
         run: |
           docker run --rm --network host pgsty/silo:RELEASE.2026-11-09T00-00-00Z \
