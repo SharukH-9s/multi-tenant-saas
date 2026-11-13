@@ -77,6 +77,7 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health/live", get(handlers::health::liveness))
         .route("/health/ready", get(handlers::health::readiness))
+        .route("/health/dependencies", get(handlers::health::dependencies))
         .nest("/api/v1", api) //
         .fallback(not_found)
         .layer(middleware)
@@ -194,6 +195,14 @@ mod tests {
     async fn readiness_is_503_without_database() {
         assert_eq!(
             get_status("/health/ready").await,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[tokio::test]
+    async fn dependencies_is_503_without_database() {
+        assert_eq!(
+            get_status("/health/dependencies").await,
             StatusCode::SERVICE_UNAVAILABLE
         );
     }

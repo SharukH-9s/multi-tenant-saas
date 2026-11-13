@@ -990,46 +990,46 @@ Tasks 2, 3 and 4 are independent of each other once Task 1 lands, so they are th
 
 ### Must complete (P0)
 
-- [ ] Workspace dependencies added and building on 1.99.1
-- [ ] `AppError::PayloadTooLarge` and `AppError::UnsupportedMediaType`
-- [ ] `StorageConfig` extended, `.env.example` and README updated, storage keys required only for `s3`
-- [ ] `AppState.storage` built in `AppState::new`, with a `with_storage` test override
-- [ ] `003_documents.sql`: `documents`, `storage_orphans`, partial dedup index, the §9.1 indexes, the trigger, grants with no DELETE on `documents`, RLS with ENABLE plus FORCE and four policies
-- [ ] `FileStorage` and `ObjectWriter` traits, `StorageError`, `ObjectStoreBackend`, `build_storage`
-- [ ] Part buffering with the single `put` path for small objects
-- [ ] `domain/document.rs` value objects and `DocumentStatus`
-- [ ] `UploadValidator`: sniffing, incremental UTF-8, byte counter, SHA-256
-- [ ] `document_repo` with the race free `insert_pending`
-- [ ] `document_service`: upload, get, list, delete, with the ownership check
-- [ ] Compensating delete plus `storage_orphans` on both failure paths
-- [ ] Five endpoints wired under `/api/v1/tenants/{tenant_id}`
-- [ ] Route local body limit and timeout
-- [ ] `object_key` absent from every response DTO and every log line
-- [ ] `tests/integration/documents.rs` covering the full error table and the concurrency case
-- [ ] `tests/security/cross_tenant_documents.rs` covering HTTP and direct SQL
-- [ ] `pool_reuse.rs` extended to `documents`
-- [ ] CI: MinIO service, bucket creation, env, `documents` RLS sanity, the DELETE denial, the private bucket probe
-- [ ] `ADR-005` and `ADR-006`
-- [ ] `docs/api/documents.md`
+- [x] Workspace dependencies added and building on 1.99.1
+- [x] `AppError::PayloadTooLarge` and `AppError::UnsupportedMediaType`
+- [x] `StorageConfig` extended, `.env.example` and README updated, storage keys required only for `s3`
+- [x] `AppState.storage` built in `AppState::new`, with a `with_storage` test override
+- [x] `003_documents.sql`: `documents`, `storage_orphans`, partial dedup index, the §9.1 indexes, the trigger, grants with no DELETE on `documents`, RLS with ENABLE plus FORCE and four policies
+- [x] `FileStorage` and `ObjectWriter` traits, `StorageError`, `ObjectStoreBackend`, `build_storage`
+- [x] Part buffering with the single `put` path for small objects
+- [x] `domain/document.rs` value objects and `DocumentStatus`
+- [x] `UploadValidator`: sniffing, incremental UTF-8, byte counter, SHA-256
+- [x] `document_repo` with the race free `insert_pending`
+- [x] `document_service`: upload, get, list, delete, with the ownership check
+- [x] Compensating delete plus `storage_orphans` on both failure paths
+- [x] Five endpoints wired under `/api/v1/tenants/{tenant_id}`
+- [x] Route local body limit and timeout
+- [x] `object_key` absent from every response DTO and every log line
+- [x] `tests/integration/documents.rs` covering the full error table and the concurrency case
+- [x] `tests/security/cross_tenant_documents.rs` covering HTTP and direct SQL
+- [x] `pool_reuse.rs` extended to `documents`
+- [x] CI: MinIO service, bucket creation, env, `documents` RLS sanity, the DELETE denial, the private bucket probe
+- [x] `ADR-005` and `ADR-006`
+- [x] `docs/api/documents.md`
 
 ### Phase 1 and 2 regression guards (P0)
 
-- [ ] `cargo fmt --all --check` clean
-- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean
-- [ ] `/health/live` still returns 200 with PostgreSQL stopped
-- [ ] `/health/ready` still returns 503 only because of PostgreSQL, not because of storage
-- [ ] `app_runtime` still cannot run DDL and still cannot read `password_hash`
-- [ ] The `from_verified_membership` grep guard still passes
-- [ ] Every Phase 2 test still passes unchanged
+- [x] `cargo fmt --all --check` clean
+- [x] `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean
+- [x] `/health/live` still returns 200 with PostgreSQL stopped
+- [x] `/health/ready` still returns 503 only because of PostgreSQL, not because of storage
+- [x] `app_runtime` still cannot run DDL and still cannot read `password_hash`
+- [x] The `from_verified_membership` grep guard still passes
+- [x] Every Phase 2 test still passes unchanged
 
 ### Should complete (P1)
 
-- [ ] `storage_reconciler` with all three passes and six tests
-- [ ] `reconcile-orphans` entry point on the API binary
-- [ ] D12: connection level sqlx errors map to 503
-- [ ] `/health/dependencies` reporting storage and Redis
-- [ ] `docs/runbooks/orphan-cleanup.md`
-- [ ] `object_key` grep guard in CI
+- [x] `storage_reconciler` with all three passes and six tests
+- [x] `reconcile-orphans` entry point on the API binary
+- [x] D12: connection level sqlx errors map to 503
+- [x] `/health/dependencies` reporting storage and Redis
+- [x] `docs/runbooks/orphan-cleanup.md`
+- [x] `object_key` grep guard in CI
 
 ### Nice to have (P2)
 

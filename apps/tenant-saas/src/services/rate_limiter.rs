@@ -247,6 +247,25 @@ impl RateLimiter {
         self.breaker.is_open()
     }
 
+    /// Health check probe for `/health/dependencies`.
+    pub async fn health(&self) -> bool {
+        if self.breaker.is_open() {
+            return false;
+        }
+        let Some(manager) = self.manager.as_ref() else {
+            return false;
+        };
+        let mut conn = manager.clone();
+        matches!(
+            tokio::time::timeout(
+                Duration::from_millis(REDIS_TIMEOUT_MS),
+                redis::cmd("PING").query_async::<String>(&mut conn),
+            )
+            .await,
+            Ok(Ok(_))
+        )
+    }
+
     /// Access the underlying circuit breaker.
     pub fn circuit_breaker(&self) -> &CircuitBreaker {
         &self.breaker
