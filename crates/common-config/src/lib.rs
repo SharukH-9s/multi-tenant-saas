@@ -16,6 +16,7 @@ pub struct AppConfig {
     pub redis: RedisConfig,
     pub storage: StorageConfig,
     pub auth: AuthConfig,
+    pub ingestion: IngestionConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +82,189 @@ pub struct AuthConfig {
     pub rate_limit_per_ip: u32,
     pub rate_limit_per_email: u32,
     pub trusted_proxy_hops: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IngestionConfig {
+    pub stream: String,
+    pub group: String,
+    pub outbox_poll_ms: u64,
+    pub outbox_batch: usize,
+    pub outbox_claim_secs: u64,
+    pub worker_concurrency: usize,
+    pub job_lease_secs: u64,
+    pub job_max_attempts: u32,
+    pub retry_base_secs: u64,
+    pub retry_max_secs: u64,
+    pub sweep_interval_secs: u64,
+    pub parse_timeout_secs: u64,
+    pub max_pdf_pages: u32,
+    pub max_extracted_chars: usize,
+    pub chunk_target_tokens: usize,
+    pub chunk_overlap_tokens: usize,
+    pub max_chunks_per_doc: usize,
+    pub embedding_provider: String,
+    pub embedding_model: String,
+    pub embedding_dim: usize,
+    pub embedding_batch: usize,
+    pub embedding_timeout_secs: u64,
+    pub embedding_api_key: Option<String>,
+    pub embedding_base_url: Option<String>,
+}
+
+impl Default for IngestionConfig {
+    fn default() -> Self {
+        Self {
+            stream: "ingestion:events".into(),
+            group: "ingestion-workers".into(),
+            outbox_poll_ms: 200,
+            outbox_batch: 50,
+            outbox_claim_secs: 30,
+            worker_concurrency: 4,
+            job_lease_secs: 300,
+            job_max_attempts: 5,
+            retry_base_secs: 5,
+            retry_max_secs: 600,
+            sweep_interval_secs: 15,
+            parse_timeout_secs: 60,
+            max_pdf_pages: 500,
+            max_extracted_chars: 5_000_000,
+            chunk_target_tokens: 500,
+            chunk_overlap_tokens: 75,
+            max_chunks_per_doc: 2000,
+            embedding_provider: "fake".into(),
+            embedding_model: "text-embedding-3-small".into(),
+            embedding_dim: 1536,
+            embedding_batch: 32,
+            embedding_timeout_secs: 30,
+            embedding_api_key: None,
+            embedding_base_url: None,
+        }
+    }
+}
+
+impl IngestionConfig {
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.stream.trim().is_empty() {
+            return Err(ConfigError::Validation(
+                "ingestion.stream".into(),
+                "must not be empty".into(),
+            ));
+        }
+        if self.group.trim().is_empty() {
+            return Err(ConfigError::Validation(
+                "ingestion.group".into(),
+                "must not be empty".into(),
+            ));
+        }
+        let positive: [(&str, u64); 10] = [
+            ("ingestion.outbox_poll_ms", self.outbox_poll_ms),
+            ("ingestion.outbox_batch", self.outbox_batch as u64),
+            ("ingestion.outbox_claim_secs", self.outbox_claim_secs),
+            (
+                "ingestion.worker_concurrency",
+                self.worker_concurrency as u64,
+            ),
+            ("ingestion.job_lease_secs", self.job_lease_secs),
+            ("ingestion.job_max_attempts", self.job_max_attempts as u64),
+            ("ingestion.retry_base_secs", self.retry_base_secs),
+            ("ingestion.sweep_interval_secs", self.sweep_interval_secs),
+            ("ingestion.parse_timeout_secs", self.parse_timeout_secs),
+            ("ingestion.max_pdf_pages", self.max_pdf_pages as u64),
+        ];
+        for (field, value) in positive {
+            if value == 0 {
+                return Err(ConfigError::Validation(
+                    field.into(),
+                    "must be greater than 0".into(),
+                ));
+            }
+        }
+        if self.max_extracted_chars == 0 {
+            return Err(ConfigError::Validation(
+                "ingestion.max_extracted_chars".into(),
+                "must be greater than 0".into(),
+            ));
+        }
+        if self.chunk_target_tokens == 0 {
+            return Err(ConfigError::Validation(
+                "ingestion.chunk_target_tokens".into(),
+                "must be greater than 0".into(),
+            ));
+        }
+        if self.chunk_overlap_tokens >= self.chunk_target_tokens {
+            return Err(ConfigError::Validation(
+                "ingestion.chunk_overlap_tokens".into(),
+                "must be strictly less than chunk_target_tokens".into(),
+            ));
+        }
+        if self.max_chunks_per_doc == 0 {
+            return Err(ConfigError::Validation(
+                "ingestion.max_chunks_per_doc".into(),
+                "must be greater than 0".into(),
+            ));
+        }
+        if self.job_lease_secs <= self.outbox_claim_secs {
+            return Err(ConfigError::Validation(
+                "ingestion.job_lease_secs".into(),
+                "must be greater than outbox_claim_secs".into(),
+            ));
+        }
+        if self.retry_max_secs < self.retry_base_secs {
+            return Err(ConfigError::Validation(
+                "ingestion.retry_max_secs".into(),
+                "must be greater than or equal to retry_base_secs".into(),
+            ));
+        }
+        match self.embedding_provider.as_str() {
+            "fake" | "openai" => {}
+            other => {
+                return Err(ConfigError::Validation(
+                    "ingestion.embedding_provider".into(),
+                    format!("must be one of 'fake', 'openai'; got '{other}'"),
+                ));
+            }
+        }
+        // Without a key every embedding call would fail, so refuse to start
+        // instead of letting every job burn its retries.
+        if self.embedding_provider == "openai" && self.embedding_api_key.is_none() {
+            return Err(ConfigError::Validation(
+                "ingestion.embedding_api_key".into(),
+                "EMBEDDING_API_KEY is required when EMBEDDING_PROVIDER=openai".into(),
+            ));
+        }
+        if self.embedding_model.trim().is_empty() {
+            return Err(ConfigError::Validation(
+                "ingestion.embedding_model".into(),
+                "must not be empty".into(),
+            ));
+        }
+        if self.embedding_dim == 0 {
+            return Err(ConfigError::Validation(
+                "ingestion.embedding_dim".into(),
+                "must be greater than 0".into(),
+            ));
+        }
+        if self.embedding_dim != 1536 {
+            return Err(ConfigError::Validation(
+                "ingestion.embedding_dim".into(),
+                "must be 1536 (fixed by pgvector column schema)".into(),
+            ));
+        }
+        if self.embedding_batch == 0 {
+            return Err(ConfigError::Validation(
+                "ingestion.embedding_batch".into(),
+                "must be greater than 0".into(),
+            ));
+        }
+        if self.embedding_timeout_secs == 0 {
+            return Err(ConfigError::Validation(
+                "ingestion.embedding_timeout_secs".into(),
+                "must be greater than 0".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl AppConfig {
@@ -176,6 +360,53 @@ impl AppConfig {
                 rate_limit_per_ip: number(&get_env, "AUTH_RATE_LIMIT_PER_IP", 10)?,
                 rate_limit_per_email: number(&get_env, "AUTH_RATE_LIMIT_PER_EMAIL", 5)?,
                 trusted_proxy_hops: number(&get_env, "AUTH_RATE_LIMIT_TRUSTED_PROXY_HOPS", 0u8)?,
+            },
+            ingestion: IngestionConfig {
+                stream: text("INGEST_STREAM", "ingestion:events"),
+                group: text("INGEST_GROUP", "ingestion-workers"),
+                outbox_poll_ms: number(&get_env, "OUTBOX_POLL_MS", 200u64)?,
+                outbox_batch: number(&get_env, "OUTBOX_BATCH", 50usize)?,
+                outbox_claim_secs: number(&get_env, "OUTBOX_CLAIM_SECS", 30u64)?,
+                worker_concurrency: number(&get_env, "WORKER_CONCURRENCY", 4usize)?,
+                job_lease_secs: number(&get_env, "JOB_LEASE_SECS", 300u64)?,
+                job_max_attempts: number(&get_env, "JOB_MAX_ATTEMPTS", 5u32)?,
+                retry_base_secs: number(&get_env, "RETRY_BASE_SECS", 5u64)?,
+                retry_max_secs: number(&get_env, "RETRY_MAX_SECS", 600u64)?,
+                sweep_interval_secs: number(&get_env, "SWEEP_INTERVAL_SECS", 15u64)?,
+                parse_timeout_secs: number(&get_env, "PARSE_TIMEOUT_SECS", 60u64)?,
+                max_pdf_pages: number(&get_env, "MAX_PDF_PAGES", 500u32)?,
+                max_extracted_chars: number(&get_env, "MAX_EXTRACTED_CHARS", 5_000_000usize)?,
+                chunk_target_tokens: {
+                    let key = if get_env("CHUNK_TARGET_TOKENS").is_some() {
+                        "CHUNK_TARGET_TOKENS"
+                    } else {
+                        "CHUNK_SIZE_TOKENS"
+                    };
+                    number(&get_env, key, 500usize)?
+                },
+                chunk_overlap_tokens: number(&get_env, "CHUNK_OVERLAP_TOKENS", 75usize)?,
+                max_chunks_per_doc: number(&get_env, "MAX_CHUNKS_PER_DOC", 2000usize)?,
+                embedding_provider: text("EMBEDDING_PROVIDER", "fake"),
+                embedding_model: text("EMBEDDING_MODEL", "text-embedding-3-small"),
+                embedding_dim: {
+                    let key = if get_env("EMBEDDING_DIM").is_some() {
+                        "EMBEDDING_DIM"
+                    } else {
+                        "EMBEDDING_DIMENSION"
+                    };
+                    number(&get_env, key, 1536usize)?
+                },
+                embedding_batch: {
+                    let key = if get_env("EMBEDDING_BATCH").is_some() {
+                        "EMBEDDING_BATCH"
+                    } else {
+                        "EMBEDDING_BATCH_SIZE"
+                    };
+                    number(&get_env, key, 32usize)?
+                },
+                embedding_timeout_secs: number(&get_env, "EMBEDDING_TIMEOUT_SECS", 30u64)?,
+                embedding_api_key: get_env("EMBEDDING_API_KEY").filter(|s| !s.trim().is_empty()),
+                embedding_base_url: get_env("EMBEDDING_BASE_URL").filter(|s| !s.trim().is_empty()),
             },
         };
 
@@ -287,6 +518,7 @@ impl AppConfig {
                 "must be greater than 0".into(),
             ));
         }
+        self.ingestion.validate()?;
         Ok(())
     }
 }
@@ -348,6 +580,32 @@ mod tests {
         assert_eq!(cfg.auth.rate_limit_per_ip, 10);
         assert_eq!(cfg.auth.rate_limit_per_email, 5);
         assert_eq!(cfg.auth.trusted_proxy_hops, 0);
+
+        // Ingestion defaults
+        assert_eq!(cfg.ingestion.stream, "ingestion:events");
+        assert_eq!(cfg.ingestion.group, "ingestion-workers");
+        assert_eq!(cfg.ingestion.outbox_poll_ms, 200);
+        assert_eq!(cfg.ingestion.outbox_batch, 50);
+        assert_eq!(cfg.ingestion.outbox_claim_secs, 30);
+        assert_eq!(cfg.ingestion.worker_concurrency, 4);
+        assert_eq!(cfg.ingestion.job_lease_secs, 300);
+        assert_eq!(cfg.ingestion.job_max_attempts, 5);
+        assert_eq!(cfg.ingestion.retry_base_secs, 5);
+        assert_eq!(cfg.ingestion.retry_max_secs, 600);
+        assert_eq!(cfg.ingestion.sweep_interval_secs, 15);
+        assert_eq!(cfg.ingestion.parse_timeout_secs, 60);
+        assert_eq!(cfg.ingestion.max_pdf_pages, 500);
+        assert_eq!(cfg.ingestion.max_extracted_chars, 5_000_000);
+        assert_eq!(cfg.ingestion.chunk_target_tokens, 500);
+        assert_eq!(cfg.ingestion.chunk_overlap_tokens, 75);
+        assert_eq!(cfg.ingestion.max_chunks_per_doc, 2000);
+        assert_eq!(cfg.ingestion.embedding_provider, "fake");
+        assert_eq!(cfg.ingestion.embedding_model, "text-embedding-3-small");
+        assert_eq!(cfg.ingestion.embedding_dim, 1536);
+        assert_eq!(cfg.ingestion.embedding_batch, 32);
+        assert_eq!(cfg.ingestion.embedding_timeout_secs, 30);
+        assert_eq!(cfg.ingestion.embedding_api_key, None);
+        assert_eq!(cfg.ingestion.embedding_base_url, None);
     }
 
     #[test]
@@ -455,6 +713,199 @@ mod tests {
         env.insert("OBJECT_STORAGE_PART_SIZE_BYTES", "1024");
         assert!(
             matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "storage.part_size_bytes")
+        );
+    }
+
+    #[test]
+    fn ingestion_overrides_are_applied() {
+        let mut env = mock_env();
+        env.insert("INGEST_STREAM", "custom:stream");
+        env.insert("INGEST_GROUP", "custom-group");
+        env.insert("OUTBOX_POLL_MS", "500");
+        env.insert("OUTBOX_BATCH", "100");
+        env.insert("OUTBOX_CLAIM_SECS", "45");
+        env.insert("WORKER_CONCURRENCY", "8");
+        env.insert("JOB_LEASE_SECS", "600");
+        env.insert("JOB_MAX_ATTEMPTS", "10");
+        env.insert("RETRY_BASE_SECS", "10");
+        env.insert("RETRY_MAX_SECS", "1200");
+        env.insert("SWEEP_INTERVAL_SECS", "30");
+        env.insert("PARSE_TIMEOUT_SECS", "120");
+        env.insert("MAX_PDF_PAGES", "200");
+        env.insert("MAX_EXTRACTED_CHARS", "1000000");
+        env.insert("CHUNK_TARGET_TOKENS", "400");
+        env.insert("CHUNK_OVERLAP_TOKENS", "50");
+        env.insert("MAX_CHUNKS_PER_DOC", "1000");
+        env.insert("EMBEDDING_PROVIDER", "openai");
+        env.insert("EMBEDDING_MODEL", "custom-embedding-model");
+        env.insert("EMBEDDING_DIM", "1536");
+        env.insert("EMBEDDING_BATCH", "64");
+        env.insert("EMBEDDING_TIMEOUT_SECS", "45");
+        env.insert("EMBEDDING_API_KEY", "sk-test-key-12345");
+        env.insert("EMBEDDING_BASE_URL", "https://api.openai.com/v1");
+
+        let cfg = load(&env).unwrap();
+        assert_eq!(cfg.ingestion.stream, "custom:stream");
+        assert_eq!(cfg.ingestion.group, "custom-group");
+        assert_eq!(cfg.ingestion.outbox_poll_ms, 500);
+        assert_eq!(cfg.ingestion.outbox_batch, 100);
+        assert_eq!(cfg.ingestion.outbox_claim_secs, 45);
+        assert_eq!(cfg.ingestion.worker_concurrency, 8);
+        assert_eq!(cfg.ingestion.job_lease_secs, 600);
+        assert_eq!(cfg.ingestion.job_max_attempts, 10);
+        assert_eq!(cfg.ingestion.retry_base_secs, 10);
+        assert_eq!(cfg.ingestion.retry_max_secs, 1200);
+        assert_eq!(cfg.ingestion.sweep_interval_secs, 30);
+        assert_eq!(cfg.ingestion.parse_timeout_secs, 120);
+        assert_eq!(cfg.ingestion.max_pdf_pages, 200);
+        assert_eq!(cfg.ingestion.max_extracted_chars, 1_000_000);
+        assert_eq!(cfg.ingestion.chunk_target_tokens, 400);
+        assert_eq!(cfg.ingestion.chunk_overlap_tokens, 50);
+        assert_eq!(cfg.ingestion.max_chunks_per_doc, 1000);
+        assert_eq!(cfg.ingestion.embedding_provider, "openai");
+        assert_eq!(cfg.ingestion.embedding_model, "custom-embedding-model");
+        assert_eq!(cfg.ingestion.embedding_dim, 1536);
+        assert_eq!(cfg.ingestion.embedding_batch, 64);
+        assert_eq!(cfg.ingestion.embedding_timeout_secs, 45);
+        assert_eq!(
+            cfg.ingestion.embedding_api_key.as_deref(),
+            Some("sk-test-key-12345")
+        );
+        assert_eq!(
+            cfg.ingestion.embedding_base_url.as_deref(),
+            Some("https://api.openai.com/v1")
+        );
+    }
+
+    #[test]
+    fn ingestion_alias_env_vars_work() {
+        let mut env = mock_env();
+        env.insert("CHUNK_SIZE_TOKENS", "450");
+        env.insert("EMBEDDING_DIMENSION", "1536");
+        env.insert("EMBEDDING_BATCH_SIZE", "16");
+
+        let cfg = load(&env).unwrap();
+        assert_eq!(cfg.ingestion.chunk_target_tokens, 450);
+        assert_eq!(cfg.ingestion.embedding_dim, 1536);
+        assert_eq!(cfg.ingestion.embedding_batch, 16);
+    }
+
+    #[test]
+    fn fails_when_chunk_overlap_not_less_than_target() {
+        let mut env = mock_env();
+        env.insert("CHUNK_TARGET_TOKENS", "500");
+        env.insert("CHUNK_OVERLAP_TOKENS", "500");
+        assert!(
+            matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "ingestion.chunk_overlap_tokens")
+        );
+
+        let mut env2 = mock_env();
+        env2.insert("CHUNK_TARGET_TOKENS", "500");
+        env2.insert("CHUNK_OVERLAP_TOKENS", "600");
+        assert!(
+            matches!(load(&env2), Err(ConfigError::Validation(f, _)) if f == "ingestion.chunk_overlap_tokens")
+        );
+    }
+
+    #[test]
+    fn fails_when_embedding_dim_is_zero() {
+        let mut env = mock_env();
+        env.insert("EMBEDDING_DIM", "0");
+        assert!(
+            matches!(load(&env), Err(ConfigError::Validation(f, msg)) if f == "ingestion.embedding_dim" && msg.contains("greater than 0"))
+        );
+    }
+
+    #[test]
+    fn fails_when_embedding_dim_is_not_1536() {
+        let mut env = mock_env();
+        env.insert("EMBEDDING_DIM", "768");
+        assert!(
+            matches!(load(&env), Err(ConfigError::Validation(f, msg)) if f == "ingestion.embedding_dim" && msg.contains("1536"))
+        );
+    }
+
+    #[test]
+    fn fails_when_job_lease_not_greater_than_outbox_claim() {
+        let mut env = mock_env();
+        env.insert("OUTBOX_CLAIM_SECS", "30");
+        env.insert("JOB_LEASE_SECS", "30");
+        assert!(
+            matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "ingestion.job_lease_secs")
+        );
+
+        let mut env2 = mock_env();
+        env2.insert("OUTBOX_CLAIM_SECS", "50");
+        env2.insert("JOB_LEASE_SECS", "30");
+        assert!(
+            matches!(load(&env2), Err(ConfigError::Validation(f, _)) if f == "ingestion.job_lease_secs")
+        );
+    }
+
+    #[test]
+    fn fails_when_embedding_provider_is_invalid() {
+        let mut env = mock_env();
+        env.insert("EMBEDDING_PROVIDER", "cohere");
+        assert!(
+            matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "ingestion.embedding_provider")
+        );
+    }
+
+    #[test]
+    fn fails_when_openai_provider_has_no_api_key() {
+        let mut env = mock_env();
+        env.insert("EMBEDDING_PROVIDER", "openai");
+        assert!(
+            matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "ingestion.embedding_api_key")
+        );
+
+        // A whitespace-only key is treated as missing.
+        let mut env2 = mock_env();
+        env2.insert("EMBEDDING_PROVIDER", "openai");
+        env2.insert("EMBEDDING_API_KEY", "   ");
+        assert!(
+            matches!(load(&env2), Err(ConfigError::Validation(f, _)) if f == "ingestion.embedding_api_key")
+        );
+    }
+
+    #[test]
+    fn fake_provider_needs_no_api_key() {
+        let mut env = mock_env();
+        env.insert("EMBEDDING_PROVIDER", "fake");
+        assert!(load(&env).is_ok());
+    }
+
+    #[test]
+    fn fails_when_retry_max_less_than_retry_base() {
+        let mut env = mock_env();
+        env.insert("RETRY_BASE_SECS", "10");
+        env.insert("RETRY_MAX_SECS", "5");
+        assert!(
+            matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "ingestion.retry_max_secs")
+        );
+    }
+
+    #[test]
+    fn fails_when_worker_concurrency_is_zero() {
+        let mut env = mock_env();
+        env.insert("WORKER_CONCURRENCY", "0");
+        assert!(
+            matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "ingestion.worker_concurrency")
+        );
+    }
+
+    #[test]
+    fn fails_when_ingestion_stream_or_group_is_empty() {
+        let mut env = mock_env();
+        env.insert("INGEST_STREAM", "   ");
+        assert!(
+            matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "ingestion.stream")
+        );
+
+        let mut env2 = mock_env();
+        env2.insert("INGEST_GROUP", "   ");
+        assert!(
+            matches!(load(&env2), Err(ConfigError::Validation(f, _)) if f == "ingestion.group")
         );
     }
 }

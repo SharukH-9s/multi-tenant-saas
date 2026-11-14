@@ -80,6 +80,21 @@ pub async fn begin_tenant_tx(pool: &PgPool, ctx: &TenantContext) -> Result<Tx, A
     Ok(tx)
 }
 
+/// Worker-only: starts a transaction scoped to `tenant_id` with no user.
+///
+/// The tenant id MUST come from an `ingestion_jobs` row or a validated
+/// `IngestionEvent`, never from an HTTP request. RLS still applies, so an
+/// event carrying the wrong tenant simply matches zero rows.
+/// A CI grep guard limits callers to `services/ingestion_service.rs` and `workers/`.
+pub async fn begin_system_tenant_tx(pool: &PgPool, tenant_id: Uuid) -> Result<Tx, AppError> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT set_config('app.current_tenant_id', $1, true)")
+        .bind(tenant_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+    Ok(tx)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +184,41 @@ mod tests {
             read_setting(&mut *tx, "app.current_user_id").await,
             ctx.user_id().to_string()
         );
+    }
+
+    #[tokio::test]
+    async fn system_tx_sets_tenant_id_and_no_user() {
+        let Some(pool) = test_pool().await else {
+            return;
+        };
+        let tenant_id = Uuid::new_v4();
+
+        let mut tx = begin_system_tenant_tx(&pool, tenant_id).await.unwrap();
+
+        assert_eq!(
+            read_setting(&mut *tx, "app.current_tenant_id").await,
+            tenant_id.to_string()
+        );
+        assert_eq!(read_setting(&mut *tx, "app.current_user_id").await, "");
+    }
+
+    #[tokio::test]
+    async fn system_tx_setting_is_cleared_on_every_exit_path() {
+        let Some(pool) = test_pool().await else {
+            return;
+        };
+
+        let tx = begin_system_tenant_tx(&pool, Uuid::new_v4()).await.unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(read_setting(&pool, "app.current_tenant_id").await, "");
+
+        let tx = begin_system_tenant_tx(&pool, Uuid::new_v4()).await.unwrap();
+        tx.rollback().await.unwrap();
+        assert_eq!(read_setting(&pool, "app.current_tenant_id").await, "");
+
+        let tx = begin_system_tenant_tx(&pool, Uuid::new_v4()).await.unwrap();
+        drop(tx);
+        assert_eq!(read_setting(&pool, "app.current_tenant_id").await, "");
     }
 
     #[tokio::test]

@@ -6,11 +6,14 @@
 //! Layers: handlers -> services -> repositories. The `domain` module has no
 //! Axum or SQLx types.
 
+pub mod ai;
 pub mod app_state;
 pub mod auth;
 pub mod domain;
 pub mod handlers;
+pub mod ingestion;
 pub mod middleware;
 pub mod repositories;
 pub mod routes;
 pub mod services;
+pub mod workers;

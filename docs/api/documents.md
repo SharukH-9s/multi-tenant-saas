@@ -14,6 +14,7 @@ All endpoints require authentication via `Authorization: Bearer <token>` and a v
 | `GET /documents` | **200 OK** | `DocumentsSearch` | Keyset-paginated list, ordered newest-first: `(created_at DESC, id DESC)`. |
 | `GET /documents/{document_id}` | **200 OK** | `DocumentsSearch` | Fetches a single document by ID. |
 | `GET /documents/{document_id}/status` | **200 OK** | `DocumentsSearch` | Lightweight status polling endpoint (`id`, `status`, `chunk_count`, `failure_code`, `updated_at`). |
+| `POST /documents/{document_id}/retry` | **202 Accepted** | `DocumentsDeleteAny` (Owner, Admin: any document) or `DocumentsUpload` (Member: own documents only) | Re-queues a `failed` document. Body is the `DocumentStatusResponse`, with `status: "pending"`. Viewer is always 403. Any status other than `failed` is 409 `DOCUMENT_NOT_RETRYABLE`. Concurrent requests: one 202, the rest 409. |
 | `DELETE /documents/{document_id}` | **204 No Content** | `DocumentsDeleteAny` or (`DocumentsDeleteOwn` + ownership) | Soft-deletes the document and removes the object from storage. |
 
 ---
@@ -93,6 +94,9 @@ All error responses use the standard JSON error envelope:
 | Membership or tenant suspended | **403** | `FORBIDDEN` | Inactive status on tenant or membership. |
 | Document ID belongs to another tenant, or does not exist, or is deleted | **404** | `NOT_FOUND` | Cross-tenant concealment via RLS. |
 | Member deleting another member's document | **403** | `FORBIDDEN` | Caller has `DocumentsDeleteOwn` but is not uploader. |
+| Member retrying another member's document | **403** | `FORBIDDEN` | Caller has `DocumentsUpload` but is not uploader. |
+| Retrying a document that is not `failed` | **409** | `DOCUMENT_NOT_RETRYABLE` | `pending`, `processing`, `retry_scheduled` and `ready` documents. |
+| Retry raced another active job | **409** | `INGESTION_ALREADY_ACTIVE` | Defence in depth: the database allows one active job per document. |
 | Object storage unreachable | **503** | `SERVICE_UNAVAILABLE` | Storage backend connection or I/O failure. |
 | PostgreSQL unreachable | **503** | `SERVICE_UNAVAILABLE` | Database pool timeout, connection drop, or class 08 exception. |
 
@@ -130,4 +134,37 @@ Exposed on `GET /documents/{document_id}/status`.
   "updated_at": "2026-11-13T00:00:00Z"
 }
 ```
+
+---
+
+## 6. Processing Lifecycle (Phase 4)
+
+A new upload starts in `pending`. The `tenant-saas-worker` process moves it on. Poll `GET /documents/{document_id}/status` to follow it.
+
+| `status` | Meaning | Client action |
+|---|---|---|
+| `pending` | Accepted and queued. Also the state right after a successful retry request | Keep polling |
+| `processing` | A worker is parsing, chunking and embedding it | Keep polling |
+| `retry_scheduled` | A temporary failure (storage, provider or database unavailable). Retried automatically with backoff. `failure_code` shows the last cause | Keep polling. No action needed |
+| `ready` | Chunks are stored. `chunk_count` is final | Done |
+| `failed` | Will not be retried automatically. `failure_code` says why | Fix the cause if possible, then `POST /documents/{document_id}/retry` |
+
+`deleting` and `deleted` documents are never returned (404).
+
+### `failure_code` values
+
+| Code | Retried automatically? | Typical cause |
+|---|---|---|
+| `PARSE_FAILED` | no | Corrupt or encrypted PDF |
+| `DOCUMENT_EMPTY` | no | No extractable text, for example a scanned PDF (no OCR) |
+| `DOCUMENT_TOO_LARGE` | no | Too many pages, characters or chunks |
+| `UNSUPPORTED_FORMAT` | no | Format the parser does not handle |
+| `OBJECT_MISSING`, `OBJECT_CORRUPT` | no | The stored file is gone or does not match its hash |
+| `EMBEDDING_REJECTED`, `EMBEDDING_INVALID_RESPONSE` | no | The embedding provider refused the request or answered badly |
+| `ATTEMPTS_EXHAUSTED` | no | Processing never finished on the final attempt |
+| `STORAGE_UNAVAILABLE`, `EMBEDDING_UNAVAILABLE`, `DATABASE_UNAVAILABLE`, `PARSE_TIMEOUT`, `INTERNAL_ERROR` | yes, while attempts remain | Temporary infrastructure problem |
+
+A transient code on a `failed` document means every attempt hit that problem. Retrying after the outage is over usually succeeds.
+
+`failure_detail` stays internal and is never returned. The full failure model is in [`docs/architecture/ingestion.md`](../architecture/ingestion.md).
 

@@ -11,6 +11,10 @@ path = "src/lib.rs"
 name = "tenant-saas-api"
 path = "src/main.rs"
 
+[[bin]]
+name = "tenant-saas-worker"
+path = "src/bin/worker.rs"
+
 [dependencies]
 common-auth = { path = "../../crates/common-auth" }
 common-config = { path = "../../crates/common-config" }
@@ -21,10 +25,12 @@ common-storage = { path = "../../crates/common-storage" }
 common-telemetry = { path = "../../crates/common-telemetry" }
 
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 axum = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 dotenvy = { workspace = true }
+rand = { workspace = true }
 redis = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -35,7 +41,14 @@ tower = { workspace = true }
 tower-http = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
+tokio-util = { workspace = true }
+tiktoken-rs = { workspace = true }
+pdf-extract = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true }
 
 [dev-dependencies]
 http-body-util = { workspace = true }
+futures-util = { workspace = true }
+tracing-subscriber = { workspace = true }
 tower = { workspace = true, features = ["util"] }

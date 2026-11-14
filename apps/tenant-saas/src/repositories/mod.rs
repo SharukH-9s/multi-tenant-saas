@@ -5,9 +5,12 @@
 //! Modules added in Task 8: `tenant_repo`. `membership_repo` has only the
 //! resolver query so far; Task 8 adds member management.
 
+pub mod chunk_repo;
 pub mod db_error;
 pub mod document_repo;
+pub mod ingestion_repo;
 pub mod membership_repo;
+pub mod outbox_repo;
 pub mod refresh_token_repo;
 pub mod tenant_repo;
 pub mod user_repo;

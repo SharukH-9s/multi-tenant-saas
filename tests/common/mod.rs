@@ -24,6 +24,11 @@ use tenant_saas::{
 use tower::ServiceExt;
 use uuid::Uuid;
 
+/// Held by tests that run the outbox publisher or sweeper, and by tests that
+/// assert an outbox row stays unpublished. Those tasks act on every tenant's
+/// rows, so they must not overlap (plan D12).
+pub static INGEST_GLOBAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Everything the app logged during this test run (all tests share it).
 #[derive(Clone, Default)]
 struct LogCapture(Arc<Mutex<Vec<u8>>>);

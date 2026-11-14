@@ -6,14 +6,16 @@ use common_errors::AppError;
 use common_storage::FileStorage;
 use sqlx::PgPool;
 
+use crate::ai::{build_embedder, EmbeddingProvider};
 use crate::services::rate_limiter::RateLimiter;
 
 /// Shared state handed to every request handler.
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
-    /// Optional `db_owner` pool for privileged reconciler queries that must
-    /// bypass `FORCE ROW LEVEL SECURITY`.  `None` in tests that do not set
+    /// Optional `db_owner` pool for reconciler queries that must see every
+    /// tenant's `documents` rows (the owner is exempt from RLS there, since
+    /// the table does not use `FORCE`).  `None` in tests that do not set
     /// `DATABASE_MIGRATION_URL`, and in environments that intentionally keep
     /// the owner credential out of the application process.
     pub owner_pool: Option<PgPool>,
@@ -24,6 +26,8 @@ pub struct AppState {
     pub rate_limiter: Arc<RateLimiter>,
     /// Object storage backend (MinIO/S3 in production, InMemory in tests).
     pub storage: Arc<dyn FileStorage>,
+    /// Embedding backend (offline fake by default, OpenAI-compatible when configured).
+    pub embedder: Arc<dyn EmbeddingProvider>,
 }
 
 impl AppState {
@@ -53,6 +57,8 @@ impl AppState {
         let storage = common_storage::build_storage(&config.storage)
             .map_err(|e| AppError::Internal(format!("storage init failed: {e}")))?;
 
+        let embedder = build_embedder(&config.ingestion)?;
+
         Ok(Self {
             db,
             owner_pool: None,
@@ -60,6 +66,7 @@ impl AppState {
             password_service: Arc::new(password_service),
             rate_limiter: Arc::new(rate_limiter),
             storage,
+            embedder,
             config,
         })
     }
@@ -79,6 +86,12 @@ impl AppState {
     /// Replaces the storage backend (e.g. for testing with an in-memory store).
     pub fn with_storage(mut self, storage: Arc<dyn FileStorage>) -> Self {
         self.storage = storage;
+        self
+    }
+
+    /// Replaces the embedding provider (e.g. for tests with a scripted embedder).
+    pub fn with_embedder(mut self, embedder: Arc<dyn EmbeddingProvider>) -> Self {
+        self.embedder = embedder;
         self
     }
 }

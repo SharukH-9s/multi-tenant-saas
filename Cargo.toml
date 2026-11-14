@@ -48,13 +48,20 @@ sha2 = "0.11"
 base64 = "0.23"
 
 # --- Cache / rate limiting (Phase 2, Task 9) ---
-redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "script"] }
+# `streams` (Phase 4): XADD / XREADGROUP / XAUTOCLAIM for the ingestion queue.
+redis = { version = "1", default-features = false, features = ["tokio-comp", "connection-manager", "script", "streams"] }
 
 # --- Object storage (Phase 3) ---
 object_store = { version = "0.14", default-features = false, features = ["fs", "aws"] }
 bytes        = { version = "1.12" }
 async-trait  = { version = "0.1" }
 futures-util = { version = "0.3" }
+
+# --- Ingestion & AI (Phase 4) ---
+tokio-util   = "0.7"
+tiktoken-rs  = "0.6"
+pdf-extract  = "0.7"
+reqwest      = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 # --- Test helpers ---
 http-body-util = "0.1"

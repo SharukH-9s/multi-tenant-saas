@@ -369,3 +369,107 @@ async fn documents_role_matrix_upload_and_delete() {
         "Owner can delete any document"
     );
 }
+
+/// Retry follows the delete rule: Owner/Admin any document, Member their own,
+/// Viewer never. The permission check runs before any query, so a Viewer gets
+/// 403 even for a document that is not retryable.
+#[tokio::test]
+async fn documents_role_matrix_retry() {
+    let Some(app) = spawn().await else { return };
+
+    let owner = app.create_session().await;
+    let admin = app.create_session().await;
+    let member_a = app.create_session().await;
+    let member_b = app.create_session().await;
+    let viewer = app.create_session().await;
+
+    let tenant_id = app.create_tenant().await;
+    for (session, role) in [
+        (&owner, "owner"),
+        (&admin, "admin"),
+        (&member_a, "member"),
+        (&member_b, "member"),
+        (&viewer, "viewer"),
+    ] {
+        app.add_member(tenant_id, session.user_id, role, "active")
+            .await;
+    }
+
+    // Member B's failed document.
+    let (status, body) = app
+        .upload_file(
+            tenant_id,
+            &member_b.access_token,
+            "b.txt",
+            b"retry matrix member b",
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let doc: Uuid = body["id"].as_str().unwrap().parse().unwrap();
+
+    let retry = |token: String| {
+        let app = app.clone();
+        async move {
+            app.request(
+                Method::POST,
+                &format!("/api/v1/tenants/{tenant_id}/documents/{doc}/retry"),
+                None,
+                Some(&token),
+            )
+            .await
+            .0
+        }
+    };
+    let fail_document = || async {
+        sqlx::query("UPDATE ingestion_jobs SET status = 'failed', completed_at = now() WHERE document_id = $1")
+            .bind(doc)
+            .execute(app.owner())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE documents SET status = 'failed' WHERE id = $1")
+            .bind(doc)
+            .execute(app.owner())
+            .await
+            .unwrap();
+    };
+
+    // Viewer: 403 even while the document is not retryable.
+    assert_eq!(
+        retry(viewer.access_token.clone()).await,
+        StatusCode::FORBIDDEN
+    );
+
+    fail_document().await;
+    assert_eq!(
+        retry(viewer.access_token.clone()).await,
+        StatusCode::FORBIDDEN,
+        "Viewer"
+    );
+    assert_eq!(
+        retry(member_a.access_token.clone()).await,
+        StatusCode::FORBIDDEN,
+        "Member A on Member B's document"
+    );
+    assert_eq!(
+        retry(member_b.access_token.clone()).await,
+        StatusCode::ACCEPTED,
+        "Member B on their own document"
+    );
+
+    fail_document().await;
+    assert_eq!(
+        retry(admin.access_token.clone()).await,
+        StatusCode::ACCEPTED,
+        "Admin on any document"
+    );
+
+    // The retry above put the document back in the queue, so a second failure
+    // needs its own job to be marked failed too.
+    fail_document().await;
+    assert_eq!(
+        retry(owner.access_token.clone()).await,
+        StatusCode::ACCEPTED,
+        "Owner on any document"
+    );
+}

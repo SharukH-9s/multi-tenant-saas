@@ -36,3 +36,11 @@ ALTER SCHEMA public OWNER TO db_owner;
 GRANT ALL ON SCHEMA public TO db_owner;
 GRANT USAGE ON SCHEMA public TO app_runtime;
 
+-- 5. Extensions that need superuser rights (Phase 4).
+-- pgvector may not be marked `trusted`, so db_owner might not be able to create
+-- it. Installing it here, as the bootstrap superuser, makes the
+-- `CREATE EXTENSION IF NOT EXISTS vector` in migration 004 a no-op.
+-- Existing local volumes do not re-run this script; run once manually:
+--   psql -U postgres -d tenant_saas -c "CREATE EXTENSION IF NOT EXISTS vector;"
+CREATE EXTENSION IF NOT EXISTS vector;
+

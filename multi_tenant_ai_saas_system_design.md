@@ -483,10 +483,10 @@ tenant-saas-worker
 ```
 
 Execution mechanics:
--   **Concurrency control:** Queries unpublished events using `SELECT ... FOR UPDATE SKIP LOCKED` so multiple worker instances do not contend or double-publish.
+-   **Concurrency control (claim-with-timeout):** A short transaction claims a batch with `UPDATE outbox_events SET claimed_until = now() + <claim_secs> ... WHERE id IN (SELECT id ... FOR UPDATE SKIP LOCKED LIMIT n) RETURNING ...` and commits, releasing the connection **before** any Redis call (§7.3.1). Rows with an unexpired claim are skipped by other instances. If the publisher crashes, the claim expires and the row is republished.
 -   **Polling schedule:** Configurable polling interval initialized at **200 ms**, to be tuned based on latency vs DB load benchmarks.
 -   **Graceful shutdown:** Supervised via `tokio::select!` with cancellation tokens to ensure in-flight batches finish before shutdown.
--   **At-least-once guarantee:** Publish event to Redis Streams, then mark event published in PostgreSQL. If the worker restarts between publish and DB update, the consumer must handle duplicates idempotently.
+-   **At-least-once guarantee:** Claim (short tx), publish to Redis Streams with no transaction open, then mark the event published in PostgreSQL (second short tx). If the worker restarts between publish and DB update, the consumer must handle duplicates idempotently.
 -   **Dead-letter handling:** Configurable retry limits and dead-letter classification for unpublishable events.
 
 ### PostgreSQL
@@ -1193,6 +1193,8 @@ Suggested fields:
 -   `publish_attempts`
 -   `last_error`
 -   `next_attempt_at`
+-   `claimed_until` (claim-with-timeout, see §5.3)
+-   `dead_lettered_at` nullable
 
 Do not put secrets, raw file contents, or unnecessary personal data in
 event payloads.
@@ -1463,9 +1465,9 @@ one PostgreSQL transaction.
 The outbox publisher:
 
 1.  Selects eligible unpublished events in bounded batches.
-2.  Claims them safely, for example with row locking and `SKIP LOCKED`.
-3.  Publishes to Redis Streams.
-4.  Marks successfully published rows.
+2.  Claims them in a short transaction (`claimed_until` timeout, row locking with `SKIP LOCKED` inside the claim query only) and commits before publishing.
+3.  Publishes to Redis Streams with no database transaction open.
+4.  Marks successfully published rows in a second short transaction.
 5.  Retries failures with backoff.
 6.  Exposes backlog and oldest-event-age metrics.
 
@@ -1562,6 +1564,7 @@ Chunking heuristics:
 -   Avoid splitting headings from the text they introduce.
 -   Preserve structural metadata (page numbers, section titles, offsets) attached to each chunk in JSONB.
 -   Record the chunking version in chunk metadata to support future re-chunking pipelines.
+-   *Overlap granularity (Phase 4 vs Phase 5):* In Phase 4, chunk overlap is bounded to complete trailing pieces/paragraphs (dropping overlap if the trailing piece exceeds `overlap_tokens`, preventing standalone partial fragments). In Phase 5, retrieval evaluations should measure boundary queries: if Recall is degraded on documents with long paragraphs (>75 tokens), refine the chunker to split trailing paragraphs by sentence or token window.
 
 ## 10.9 Embedding generation
 
@@ -1723,6 +1726,7 @@ Measure:
 -   Mean Reciprocal Rank (MRR).
 -   nDCG@k where graded relevance labels exist.
 -   Search latency percentiles.
+-   Chunk boundary recall (specifically test queries spanning chunk transitions to evaluate whether paragraph-level overlap drops affect retrieval).
 
 Keep the evaluation set versioned so changes can be compared.
 
@@ -2855,6 +2859,7 @@ Deliverables:
 -   Search endpoint.
 -   Relevance evaluation dataset.
 -   Search benchmark report.
+-   Chunk boundary retrieval analysis (evaluate impact of long-paragraph overlap-dropping on Recall@10; refine chunker to sentence-level overlap if indicated).
 
 Exit criteria:
 

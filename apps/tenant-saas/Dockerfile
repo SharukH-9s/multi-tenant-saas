@@ -1,5 +1,8 @@
 # Build from the workspace root:
-#   docker build -f apps/tenant-saas/Dockerfile -t tenant-saas-api .
+#   docker build -f apps/tenant-saas/Dockerfile -t tenant-saas .
+#
+# One image, two binaries. The API is the default entrypoint; run the worker with
+#   docker run --entrypoint ./tenant-saas-worker tenant-saas
 
 # Overrides rust-toolchain.toml so rustup does not download extra components.
 ARG RUST_VERSION=1.99.1
@@ -25,7 +28,7 @@ COPY --from=planner /app/recipe.json recipe.json
 # Cached until dependencies change.
 RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
-RUN cargo build --release --bin tenant-saas-api
+RUN cargo build --release --bins
 
 # ── Stage 4: runtime ──────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
@@ -34,6 +37,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && useradd --system --shell /usr/sbin/nologin appuser
 WORKDIR /app
 COPY --from=builder /app/target/release/tenant-saas-api .
+COPY --from=builder /app/target/release/tenant-saas-worker .
 USER appuser
 EXPOSE 8080
 ENTRYPOINT ["./tenant-saas-api"]

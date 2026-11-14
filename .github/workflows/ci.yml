@@ -39,6 +39,27 @@ jobs:
             exit 1
           fi
           echo "object_key handler guard: PASS"
+      - name: Verify begin_system_tenant_tx is only called by the worker path
+        run: |
+          # The worker-only tx helper takes a raw tenant id. It must never be
+          # reachable from an HTTP handler, so callers are limited to the
+          # ingestion service, the ingestion repository and workers/.
+          hits=$(grep -rn "begin_system_tenant_tx" apps/tenant-saas/src/             | grep -v "apps/tenant-saas/src/services/ingestion_service.rs"             | grep -v "apps/tenant-saas/src/repositories/ingestion_repo.rs"             | grep -v "apps/tenant-saas/src/workers/" || true)
+          if [ -n "$hits" ]; then
+            echo "FORBIDDEN: begin_system_tenant_tx used outside the worker path:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "begin_system_tenant_tx grep guard: PASS"
+      - name: Verify pure ingestion and AI modules do not touch the database
+        run: |
+          hits=$(grep -rn "sqlx" apps/tenant-saas/src/ingestion/ apps/tenant-saas/src/ai/ || true)
+          if [ -n "$hits" ]; then
+            echo "FORBIDDEN: sqlx referenced in a pure module:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "pure-module sqlx guard: PASS"
 
   test:
     name: Tests
@@ -115,7 +136,7 @@ jobs:
           psql "$MIGRATION_URL" -c "
             SELECT relname, relrowsecurity, relforcerowsecurity
             FROM pg_class
-            WHERE relname IN ('tenants', 'memberships', 'users', 'documents');
+            WHERE relname IN ('tenants', 'memberships', 'users', 'documents', 'ingestion_jobs', 'document_chunks');
           "
           # Verify app_runtime cannot select password_hash directly
           output=$(psql "$RUNTIME_URL" -c "SELECT password_hash FROM users;" 2>&1 || true)
@@ -127,6 +148,56 @@ jobs:
           echo "$output"
           echo "$output" | grep -q "permission denied"
           echo "app_runtime DELETE documents denial: PASS"
+          # Verify app_runtime cannot DELETE ingestion_jobs
+          output=$(psql "$RUNTIME_URL" -c "DELETE FROM ingestion_jobs;" 2>&1 || true)
+          echo "$output"
+          echo "$output" | grep -q "permission denied"
+          echo "app_runtime DELETE ingestion_jobs denial: PASS"
+          # Chunks are immutable: replace is DELETE + INSERT, never UPDATE
+          output=$(psql "$RUNTIME_URL" -c "UPDATE document_chunks SET content = content;" 2>&1 || true)
+          echo "$output"
+          echo "$output" | grep -q "permission denied"
+          echo "app_runtime UPDATE document_chunks denial: PASS"
+      - name: Verify ingestion tables keep RLS without FORCE (plan D2)
+        run: |
+          # The sweeper is a SECURITY DEFINER function owned by db_owner. It only
+          # sees every tenant's rows while the owner is exempt, i.e. RLS is
+          # ENABLEd but not FORCEd. A later "tidy-up" adding FORCE would silently
+          # stop crash recovery, so fail loudly here.
+          bad=$(psql "$MIGRATION_URL" -tAc "
+            SELECT string_agg(relname, ',')
+            FROM pg_class
+            WHERE relname IN ('ingestion_jobs', 'document_chunks')
+              AND (NOT relrowsecurity OR relforcerowsecurity);
+          ")
+          if [ -n "$bad" ]; then
+            echo "RLS must be ENABLE without FORCE on: $bad"
+            exit 1
+          fi
+          echo "ingestion RLS ENABLE/no-FORCE: PASS"
+      - name: Verify sweep_ingestion_jobs is a locked-down definer function
+        run: |
+          result=$(psql "$MIGRATION_URL" -tAc "
+            SELECT p.prosecdef,
+                   coalesce(array_to_string(p.proconfig, ','), '') LIKE '%search_path=%',
+                   p.proacl IS NOT NULL
+                     AND NOT EXISTS (SELECT 1 FROM aclexplode(p.proacl) a
+                                      WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE'),
+                   has_function_privilege('app_runtime', p.oid, 'EXECUTE')
+            FROM pg_proc p
+            WHERE p.proname = 'sweep_ingestion_jobs';
+          ")
+          echo "prosecdef|fixed_search_path|no_public_execute|app_runtime_execute = $result"
+          [ "$result" = "t|t|t|t" ] || { echo "sweep_ingestion_jobs is not locked down"; exit 1; }
+          echo "sweep_ingestion_jobs definer checks: PASS"
+      - name: Verify pgvector 0.8.0 or newer is installed
+        run: |
+          ok=$(psql "$MIGRATION_URL" -tAc "
+            SELECT string_to_array(extversion, '.')::int[] >= ARRAY[0, 8, 0]
+            FROM pg_extension WHERE extname = 'vector';
+          ")
+          [ "$ok" = "t" ] || { echo "pgvector >= 0.8.0 is required, got: '$ok'"; exit 1; }
+          echo "pgvector version: PASS"
       - name: Verify db_owner and app_runtime are NOT superusers
         run: |
           psql "$BOOTSTRAP_URL" -c "
@@ -172,4 +243,5 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.99.1
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --bin tenant-saas-api
+      # Both binaries: tenant-saas-api and tenant-saas-worker
+      - run: cargo build --release --bins

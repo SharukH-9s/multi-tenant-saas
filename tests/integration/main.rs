@@ -1,8 +1,15 @@
 mod auth;
 mod documents;
 mod health;
+mod ingestion_claim;
+mod ingestion_enqueue;
+mod ingestion_pipeline;
+mod ingestion_recovery;
+mod ingestion_retry;
+mod ingestion_support;
 mod invitations;
 mod multi_tenant_membership;
 mod orphans;
+mod outbox_publisher;
 mod rate_limit;
 mod tenant_resolver;

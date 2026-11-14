@@ -5,6 +5,7 @@
 //! The rules mirror the CHECK constraints in `002_identity.sql`.
 
 pub mod document;
+pub mod ingestion;
 pub mod tenant;
 pub mod user;
 

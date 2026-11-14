@@ -24,6 +24,10 @@ pub fn map_db_error(error: sqlx::Error) -> AppError {
                 Some("memberships_tenant_user_unique") => {
                     Some(("ALREADY_MEMBER", "This user is already a member."))
                 }
+                Some("ingestion_jobs_one_active") => Some((
+                    "INGESTION_ALREADY_ACTIVE",
+                    "This document is already being processed.",
+                )),
                 _ => None,
             };
             if let Some((code, message)) = conflict {

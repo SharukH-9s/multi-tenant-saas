@@ -1,15 +1,16 @@
 //! Document lifecycle: upload, get, list, delete.
 //!
 //! Permission checks happen **before** any transaction opens, matching the
-//! `tenant_service` pattern.  The DB transaction covers **only** the
-//! `insert_pending` call — no storage I/O, hashing, or Redis touches
-//! happen while a transaction is open (see §7.3.1).
+//! `tenant_service` pattern.  The upload transaction covers `insert_pending`
+//! and `enqueue` (three INSERTs, no I/O) — no storage I/O, hashing, or Redis
+//! touches happen while a transaction is open (see §7.3.1).
 //!
 //! # Upload flow (D7)
 //!
 //! 1. Permission check (`DocumentsUpload`).
 //! 2. Validate + hash + stream to object storage (no tx open).
-//! 3. Open a short-lived tx → `insert_pending` → commit.
+//! 3. Open a short-lived tx → `insert_pending` → `enqueue` (job + outbox
+//!    event, new documents only) → commit.
 //! 4. If deduplicated, delete the just-written object.
 //! 5. Audit log.
 //!
@@ -25,8 +26,12 @@ use uuid::Uuid;
 
 use crate::{
     app_state::AppState,
-    domain::document::{ContentHash, SupportedFormat},
-    repositories::document_repo::{self, Cursor, DocumentRow, InsertOutcome, NewDocument},
+    domain::document::{ContentHash, DocumentStatus, SupportedFormat},
+    repositories::{
+        chunk_repo,
+        document_repo::{self, Cursor, DocumentRow, InsertOutcome, NewDocument},
+        ingestion_repo,
+    },
     services::{object_key, upload_validator::UploadValidator},
 };
 
@@ -59,8 +64,9 @@ pub struct ListQuery {
 
 /// Uploads a document: streams to storage, hashes, validates, then inserts.
 ///
-/// The transaction covers **only** `insert_pending`.  No storage call, no
-/// hashing, and no Redis touch happens while it is open (§7.3.1).
+/// The transaction covers `insert_pending` and `enqueue`.  No storage call,
+/// no hashing, and no Redis touch happens while it is open (§7.3.1).  A
+/// duplicate upload enqueues nothing.
 pub async fn upload(
     state: &AppState,
     ctx: &TenantContext,
@@ -83,22 +89,32 @@ pub async fn upload(
     )
     .await?;
 
-    // ── 3. Short-lived transaction: insert_pending ───────────────────────
+    // ── 3. Short-lived transaction: insert_pending + enqueue ─────────────
     let outcome = {
         let mut tx = begin_tenant_tx(&state.db, ctx).await?;
-        let outcome = document_repo::insert_pending(
-            &mut tx,
-            NewDocument {
-                tenant_id: ctx.tenant_id(),
-                uploaded_by: ctx.user_id(),
-                title: upload.title,
-                original_filename: upload.original_filename,
-                content_hash: hash.as_str().to_owned(),
-                object_key: key.clone(),
-                mime_type: upload.format.mime_type().to_owned(),
-                size_bytes: size_bytes as i64,
-            },
-        )
+        let new_document = NewDocument {
+            tenant_id: ctx.tenant_id(),
+            uploaded_by: ctx.user_id(),
+            title: upload.title,
+            original_filename: upload.original_filename,
+            content_hash: hash.as_str().to_owned(),
+            object_key: key.clone(),
+            mime_type: upload.format.mime_type().to_owned(),
+            size_bytes: size_bytes as i64,
+        };
+        let outcome: Result<InsertOutcome, AppError> = async {
+            let outcome = document_repo::insert_pending(&mut tx, new_document).await?;
+            if let InsertOutcome::Created(ref row) = outcome {
+                ingestion_repo::enqueue(
+                    &mut tx,
+                    ctx.tenant_id(),
+                    row.id,
+                    state.config.ingestion.job_max_attempts,
+                )
+                .await?;
+            }
+            Ok(outcome)
+        }
         .await;
 
         match outcome {
@@ -107,7 +123,7 @@ pub async fn upload(
                 o
             }
             Err(e) => {
-                // Transaction failed — try to delete the uploaded object.
+                // Insert or enqueue failed — try to delete the uploaded object.
                 // A failure here becomes an orphan, but the client sees the
                 // original database error.
                 drop(tx); // rollback
@@ -247,6 +263,10 @@ pub async fn delete(state: &AppState, ctx: &TenantContext, id: Uuid) -> Result<(
         tx.rollback().await?;
         return Err(AppError::Forbidden);
     }
+    // Chunks go in the same commit as `deleting`. The job is left alone (D9):
+    // the worker's persist step requires `processing`, so a late worker writes
+    // nothing, and the claim or the sweeper cancels the job.
+    chunk_repo::delete_for_document(&mut tx, id).await?;
     tx.commit().await?;
 
     // ── Step 2: delete the object from storage ──────────────────────────
@@ -286,6 +306,60 @@ pub async fn delete(state: &AppState, ctx: &TenantContext, id: Uuid) -> Result<(
     );
 
     Ok(())
+}
+
+/// Re-queues a `failed` document for ingestion.
+///
+/// # Permission rules
+///
+/// Same shape as delete: `DocumentsDeleteAny` (Owner, Admin) can retry any
+/// document, `DocumentsUpload` (Member) only their own, Viewer never.
+/// "Not your document" is 403, not 404, for the reason given on [`delete`].
+///
+/// The row lock plus the `status = 'failed'` check serialize double clicks:
+/// the second request waits for the lock, then sees `pending` and gets 409.
+pub async fn retry(
+    state: &AppState,
+    ctx: &TenantContext,
+    id: Uuid,
+) -> Result<DocumentRow, AppError> {
+    let any = ctx.has(Permission::DocumentsDeleteAny);
+    if !any {
+        ctx.require(Permission::DocumentsUpload)?; // Viewer stops here with 403
+    }
+
+    let mut tx = begin_tenant_tx(&state.db, ctx).await?;
+    let document = document_repo::lock_live(&mut tx, id).await?;
+
+    if !any && document.uploaded_by != Some(ctx.user_id()) {
+        return Err(AppError::Forbidden); // dropping the tx rolls it back
+    }
+    if document.status != DocumentStatus::Failed.as_str() {
+        return Err(AppError::Conflict {
+            code: "DOCUMENT_NOT_RETRYABLE",
+            message: "Only failed documents can be retried.".into(),
+        });
+    }
+
+    let document = document_repo::reset_for_retry(&mut tx, id).await?;
+    ingestion_repo::enqueue(
+        &mut tx,
+        ctx.tenant_id(),
+        id,
+        state.config.ingestion.job_max_attempts,
+    )
+    .await?;
+    tx.commit().await?;
+
+    tracing::info!(
+        target: "audit",
+        event = "document.retry_requested",
+        tenant_id = %ctx.tenant_id(),
+        document_id = %id,
+        actor = %ctx.user_id(),
+    );
+
+    Ok(document)
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────

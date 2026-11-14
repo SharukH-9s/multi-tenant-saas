@@ -196,6 +196,48 @@ pub async fn find_by_id(tx: &mut Tx, id: Uuid) -> Result<DocumentRow, AppError> 
     .ok_or(AppError::NotFound)
 }
 
+/// Fetches a live document and locks its row until the transaction ends.
+///
+/// Serializes concurrent writers (two retry clicks): the second one waits,
+/// then sees the row as the first one left it. Hidden or deleted rows are
+/// `NotFound`, same as [`find_by_id`].
+pub async fn lock_live(tx: &mut Tx, id: Uuid) -> Result<DocumentRow, AppError> {
+    sqlx::query_as::<_, DocumentRow>(
+        "SELECT id, tenant_id, uploaded_by, title, original_filename, \
+                content_hash, object_key, mime_type, size_bytes, \
+                status, failure_code, failure_detail, chunk_count, \
+                created_at, updated_at, deleted_at \
+           FROM documents \
+          WHERE id = $1 AND deleted_at IS NULL \
+            FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_db_error)?
+    .ok_or(AppError::NotFound)
+}
+
+/// Puts a failed document back to `pending` for a manual retry and clears
+/// the failure fields. The caller has already locked the row and checked
+/// that it is `failed`.
+pub async fn reset_for_retry(tx: &mut Tx, id: Uuid) -> Result<DocumentRow, AppError> {
+    sqlx::query_as::<_, DocumentRow>(
+        "UPDATE documents \
+            SET status = 'pending', failure_code = NULL, failure_detail = NULL \
+          WHERE id = $1 \
+          RETURNING id, tenant_id, uploaded_by, title, original_filename, \
+                    content_hash, object_key, mime_type, size_bytes, \
+                    status, failure_code, failure_detail, chunk_count, \
+                    created_at, updated_at, deleted_at",
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_db_error)?
+    .ok_or(AppError::NotFound)
+}
+
 /// Keyset-paginated list, newest first.
 ///
 /// Uses `(created_at DESC, id DESC)` to match `documents_tenant_created_idx`.

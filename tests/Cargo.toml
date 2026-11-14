@@ -23,6 +23,7 @@ tenant-saas      = { path = "../apps/tenant-saas" }
 common-auth      = { path = "../crates/common-auth" }
 common-config    = { path = "../crates/common-config" }
 common-errors    = { path = "../crates/common-errors" }
+common-messaging = { path = "../crates/common-messaging" }
 common-database  = { path = "../crates/common-database" }
 common-storage   = { path = "../crates/common-storage" }
 
@@ -37,6 +38,7 @@ serde_json       = { workspace = true }
 sha2             = { workspace = true }
 sqlx             = { workspace = true }
 tokio            = { workspace = true }
+tokio-util       = { workspace = true }
 tower            = { workspace = true, features = ["util"] }
 tracing          = { workspace = true }
 tracing-subscriber = { workspace = true }

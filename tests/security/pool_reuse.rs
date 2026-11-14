@@ -312,3 +312,36 @@ async fn concurrent_tasks_under_shared_pool_never_leak_tenant_context() {
         handle.await.expect("task succeeded without panic");
     }
 }
+
+#[tokio::test]
+async fn system_tenant_tx_on_single_connection_never_leaks_context() {
+    let Some(_app) = spawn().await else { return };
+
+    let url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+    let pool = single_conn_pool(&url).await;
+    let tenant_a = Uuid::new_v4();
+    let tenant_b = Uuid::new_v4();
+
+    for tenant in [tenant_a, tenant_b, tenant_a] {
+        let mut tx = common_database::begin_system_tenant_tx(&pool, tenant)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_setting(&mut *tx, "app.current_tenant_id").await,
+            tenant.to_string()
+        );
+        assert_eq!(read_setting(&mut *tx, "app.current_user_id").await, "");
+        tx.commit().await.unwrap();
+
+        assert_eq!(read_setting(&pool, "app.current_tenant_id").await, "");
+        assert_eq!(read_setting(&pool, "app.current_user_id").await, "");
+    }
+
+    // An aborted system transaction must not leak either.
+    let mut tx = common_database::begin_system_tenant_tx(&pool, tenant_a)
+        .await
+        .unwrap();
+    let _ = sqlx::query("SELECT 1/0").execute(&mut *tx).await;
+    drop(tx);
+    assert_eq!(read_setting(&pool, "app.current_tenant_id").await, "");
+}

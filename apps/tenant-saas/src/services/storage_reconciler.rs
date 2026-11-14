@@ -14,9 +14,10 @@
 //! # RLS note
 //!
 //! The reconciler has no tenant context, so it **must not** use
-//! `begin_tenant_tx`.  `storage_orphans` has no RLS policy; the owner pool
-//! (if present in `AppState`) bypasses the `FORCE ROW LEVEL SECURITY` on the
-//! `documents` table.  When `owner_pool` is absent, Pass 2 and Pass 3 database
+//! `begin_tenant_tx`.  `storage_orphans` has no RLS policy.  The owner pool
+//! (if present in `AppState`) sees every tenant's `documents` rows because
+//! `db_owner` owns the table and `documents` uses RLS without `FORCE`, so the
+//! owner is exempt from its policies.  When `owner_pool` is absent, Pass 2 and Pass 3 database
 //! cross-checks are skipped (they log a warning).
 
 use chrono::{Duration, Utc};
@@ -145,7 +146,7 @@ async fn pass2_finalize_stuck_deleting(
 
     let cutoff = Utc::now() - Duration::minutes(STUCK_DELETING_MINS);
 
-    // Query through the owner pool to bypass FORCE ROW LEVEL SECURITY on documents.
+    // Query through the owner pool: db_owner owns `documents` (RLS without FORCE), so RLS does not apply to it.
     let stuck: Vec<StuckDeletingRow> = sqlx::query_as::<_, StuckDeletingRow>(
         "SELECT id, tenant_id, object_key \
            FROM documents \

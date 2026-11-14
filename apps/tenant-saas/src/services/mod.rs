@@ -3,6 +3,7 @@
 pub mod auth_service;
 pub mod circuit_breaker;
 pub mod document_service;
+pub mod ingestion_service;
 pub mod membership_service;
 pub mod object_key;
 pub mod rate_limiter;

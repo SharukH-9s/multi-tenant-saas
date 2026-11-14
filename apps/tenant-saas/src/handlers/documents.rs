@@ -108,6 +108,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
             get(get_document).delete(delete_document),
         )
         .route("/documents/{document_id}/status", get(get_status))
+        .route("/documents/{document_id}/retry", post(retry_document))
 }
 
 // ── Response DTOs ────────────────────────────────────────────────────────────
@@ -329,6 +330,28 @@ async fn get_status(
         failure_code: row.failure_code,
         updated_at: row.updated_at,
     }))
+}
+
+/// `POST /documents/{document_id}/retry` — re-queue a failed document.
+///
+/// Returns **202** with the status body, **409** `DOCUMENT_NOT_RETRYABLE` when
+/// the document is not `failed`.
+async fn retry_document(
+    State(state): State<AppState>,
+    TenantCtx(ctx): TenantCtx,
+    Path((_tenant_id, document_id)): Path<(Uuid, Uuid)>,
+) -> Result<impl IntoResponse, AppError> {
+    let row = document_service::retry(&state, &ctx, document_id).await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(DocumentStatusResponse {
+            id: row.id,
+            status: row.status,
+            chunk_count: row.chunk_count,
+            failure_code: row.failure_code,
+            updated_at: row.updated_at,
+        }),
+    ))
 }
 
 /// `DELETE /documents/{document_id}` — soft-delete + storage cleanup.
