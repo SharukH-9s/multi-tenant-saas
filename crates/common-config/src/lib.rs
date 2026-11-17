@@ -17,6 +17,7 @@ pub struct AppConfig {
     pub storage: StorageConfig,
     pub auth: AuthConfig,
     pub ingestion: IngestionConfig,
+    pub search: SearchConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,6 +111,7 @@ pub struct IngestionConfig {
     pub embedding_timeout_secs: u64,
     pub embedding_api_key: Option<String>,
     pub embedding_base_url: Option<String>,
+    pub embedding_api_version: Option<String>,
 }
 
 impl Default for IngestionConfig {
@@ -139,6 +141,7 @@ impl Default for IngestionConfig {
             embedding_timeout_secs: 30,
             embedding_api_key: None,
             embedding_base_url: None,
+            embedding_api_version: None,
         }
     }
 }
@@ -261,6 +264,101 @@ impl IngestionConfig {
             return Err(ConfigError::Validation(
                 "ingestion.embedding_timeout_secs".into(),
                 "must be greater than 0".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchConfig {
+    pub vector_candidates: usize,
+    pub lexical_candidates: usize,
+    pub rrf_k: u32,
+    pub default_limit: usize,
+    pub max_limit: usize,
+    pub ef_search: usize,
+    pub embed_timeout_ms: u64,
+    pub statement_timeout_ms: u64,
+    pub query_max_chars: usize,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            vector_candidates: 30,
+            lexical_candidates: 30,
+            rrf_k: 60,
+            default_limit: 10,
+            max_limit: 50,
+            ef_search: 100,
+            embed_timeout_ms: 3000,
+            statement_timeout_ms: 5000,
+            query_max_chars: 1000,
+        }
+    }
+}
+
+impl SearchConfig {
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if !(1..=200).contains(&self.vector_candidates) {
+            return Err(ConfigError::Validation(
+                "search.vector_candidates".into(),
+                "must be between 1 and 200".into(),
+            ));
+        }
+        if !(1..=200).contains(&self.lexical_candidates) {
+            return Err(ConfigError::Validation(
+                "search.lexical_candidates".into(),
+                "must be between 1 and 200".into(),
+            ));
+        }
+        if !(1..=1000).contains(&self.rrf_k) {
+            return Err(ConfigError::Validation(
+                "search.rrf_k".into(),
+                "must be between 1 and 1000".into(),
+            ));
+        }
+        let max_possible_limit = self.vector_candidates + self.lexical_candidates;
+        if self.max_limit == 0 || self.max_limit > max_possible_limit {
+            return Err(ConfigError::Validation(
+                "search.max_limit".into(),
+                format!(
+                    "must be between 1 and vector_candidates + lexical_candidates ({max_possible_limit})"
+                ),
+            ));
+        }
+        if self.default_limit == 0 || self.default_limit > self.max_limit {
+            return Err(ConfigError::Validation(
+                "search.default_limit".into(),
+                format!("must be between 1 and max_limit ({})", self.max_limit),
+            ));
+        }
+        if self.ef_search < self.vector_candidates || self.ef_search > 1000 {
+            return Err(ConfigError::Validation(
+                "search.ef_search".into(),
+                format!(
+                    "must be between vector_candidates ({}) and 1000",
+                    self.vector_candidates
+                ),
+            ));
+        }
+        if !(100..=30000).contains(&self.embed_timeout_ms) {
+            return Err(ConfigError::Validation(
+                "search.embed_timeout_ms".into(),
+                "must be between 100 and 30000".into(),
+            ));
+        }
+        if !(100..=60000).contains(&self.statement_timeout_ms) {
+            return Err(ConfigError::Validation(
+                "search.statement_timeout_ms".into(),
+                "must be between 100 and 60000".into(),
+            ));
+        }
+        if !(1..=8000).contains(&self.query_max_chars) {
+            return Err(ConfigError::Validation(
+                "search.query_max_chars".into(),
+                "must be between 1 and 8000".into(),
             ));
         }
         Ok(())
@@ -407,6 +505,18 @@ impl AppConfig {
                 embedding_timeout_secs: number(&get_env, "EMBEDDING_TIMEOUT_SECS", 30u64)?,
                 embedding_api_key: get_env("EMBEDDING_API_KEY").filter(|s| !s.trim().is_empty()),
                 embedding_base_url: get_env("EMBEDDING_BASE_URL").filter(|s| !s.trim().is_empty()),
+                embedding_api_version: get_env("EMBEDDING_API_VERSION").filter(|s| !s.trim().is_empty()),
+            },
+            search: SearchConfig {
+                vector_candidates: number(&get_env, "SEARCH_VECTOR_CANDIDATES", 30usize)?,
+                lexical_candidates: number(&get_env, "SEARCH_LEXICAL_CANDIDATES", 30usize)?,
+                rrf_k: number(&get_env, "SEARCH_RRF_K", 60u32)?,
+                default_limit: number(&get_env, "SEARCH_DEFAULT_LIMIT", 10usize)?,
+                max_limit: number(&get_env, "SEARCH_MAX_LIMIT", 50usize)?,
+                ef_search: number(&get_env, "SEARCH_EF_SEARCH", 100usize)?,
+                embed_timeout_ms: number(&get_env, "SEARCH_EMBED_TIMEOUT_MS", 3000u64)?,
+                statement_timeout_ms: number(&get_env, "SEARCH_STATEMENT_TIMEOUT_MS", 5000u64)?,
+                query_max_chars: number(&get_env, "SEARCH_QUERY_MAX_CHARS", 1000usize)?,
             },
         };
 
@@ -519,6 +629,7 @@ impl AppConfig {
             ));
         }
         self.ingestion.validate()?;
+        self.search.validate()?;
         Ok(())
     }
 }
@@ -906,6 +1017,180 @@ mod tests {
         env2.insert("INGEST_GROUP", "   ");
         assert!(
             matches!(load(&env2), Err(ConfigError::Validation(f, _)) if f == "ingestion.group")
+        );
+    }
+
+    #[test]
+    fn search_defaults_are_valid() {
+        let env = mock_env();
+        let cfg = load(&env).unwrap();
+        assert_eq!(cfg.search, SearchConfig::default());
+        assert_eq!(cfg.search.vector_candidates, 30);
+        assert_eq!(cfg.search.lexical_candidates, 30);
+        assert_eq!(cfg.search.rrf_k, 60);
+        assert_eq!(cfg.search.default_limit, 10);
+        assert_eq!(cfg.search.max_limit, 50);
+        assert_eq!(cfg.search.ef_search, 100);
+        assert_eq!(cfg.search.embed_timeout_ms, 3000);
+        assert_eq!(cfg.search.statement_timeout_ms, 5000);
+        assert_eq!(cfg.search.query_max_chars, 1000);
+    }
+
+    #[test]
+    fn search_overrides_are_applied() {
+        let mut env = mock_env();
+        env.insert("SEARCH_VECTOR_CANDIDATES", "40");
+        env.insert("SEARCH_LEXICAL_CANDIDATES", "45");
+        env.insert("SEARCH_RRF_K", "80");
+        env.insert("SEARCH_DEFAULT_LIMIT", "20");
+        env.insert("SEARCH_MAX_LIMIT", "70");
+        env.insert("SEARCH_EF_SEARCH", "120");
+        env.insert("SEARCH_EMBED_TIMEOUT_MS", "4000");
+        env.insert("SEARCH_STATEMENT_TIMEOUT_MS", "8000");
+        env.insert("SEARCH_QUERY_MAX_CHARS", "2000");
+
+        let cfg = load(&env).unwrap();
+        assert_eq!(cfg.search.vector_candidates, 40);
+        assert_eq!(cfg.search.lexical_candidates, 45);
+        assert_eq!(cfg.search.rrf_k, 80);
+        assert_eq!(cfg.search.default_limit, 20);
+        assert_eq!(cfg.search.max_limit, 70);
+        assert_eq!(cfg.search.ef_search, 120);
+        assert_eq!(cfg.search.embed_timeout_ms, 4000);
+        assert_eq!(cfg.search.statement_timeout_ms, 8000);
+        assert_eq!(cfg.search.query_max_chars, 2000);
+    }
+
+    #[test]
+    fn fails_when_search_vector_candidates_out_of_range() {
+        let mut env = mock_env();
+        env.insert("SEARCH_VECTOR_CANDIDATES", "0");
+        assert!(
+            matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "search.vector_candidates")
+        );
+
+        let mut env2 = mock_env();
+        env2.insert("SEARCH_VECTOR_CANDIDATES", "201");
+        assert!(
+            matches!(load(&env2), Err(ConfigError::Validation(f, _)) if f == "search.vector_candidates")
+        );
+    }
+
+    #[test]
+    fn fails_when_search_lexical_candidates_out_of_range() {
+        let mut env = mock_env();
+        env.insert("SEARCH_LEXICAL_CANDIDATES", "0");
+        assert!(
+            matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "search.lexical_candidates")
+        );
+
+        let mut env2 = mock_env();
+        env2.insert("SEARCH_LEXICAL_CANDIDATES", "201");
+        assert!(
+            matches!(load(&env2), Err(ConfigError::Validation(f, _)) if f == "search.lexical_candidates")
+        );
+    }
+
+    #[test]
+    fn fails_when_search_rrf_k_out_of_range() {
+        let mut env = mock_env();
+        env.insert("SEARCH_RRF_K", "0");
+        assert!(matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "search.rrf_k"));
+
+        let mut env2 = mock_env();
+        env2.insert("SEARCH_RRF_K", "1001");
+        assert!(matches!(load(&env2), Err(ConfigError::Validation(f, _)) if f == "search.rrf_k"));
+    }
+
+    #[test]
+    fn fails_when_search_max_limit_out_of_range() {
+        let mut env = mock_env();
+        env.insert("SEARCH_MAX_LIMIT", "0");
+        assert!(
+            matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "search.max_limit")
+        );
+
+        // default candidates: 30 + 30 = 60; 61 exceeds it
+        let mut env2 = mock_env();
+        env2.insert("SEARCH_MAX_LIMIT", "61");
+        assert!(
+            matches!(load(&env2), Err(ConfigError::Validation(f, _)) if f == "search.max_limit")
+        );
+    }
+
+    #[test]
+    fn fails_when_search_default_limit_out_of_range() {
+        let mut env = mock_env();
+        env.insert("SEARCH_DEFAULT_LIMIT", "0");
+        assert!(
+            matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "search.default_limit")
+        );
+
+        let mut env2 = mock_env();
+        env2.insert("SEARCH_DEFAULT_LIMIT", "51"); // max_limit is 50
+        assert!(
+            matches!(load(&env2), Err(ConfigError::Validation(f, _)) if f == "search.default_limit")
+        );
+    }
+
+    #[test]
+    fn fails_when_search_ef_search_out_of_range() {
+        let mut env = mock_env();
+        env.insert("SEARCH_VECTOR_CANDIDATES", "50");
+        env.insert("SEARCH_EF_SEARCH", "49"); // must be >= vector_candidates
+        assert!(
+            matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "search.ef_search")
+        );
+
+        let mut env2 = mock_env();
+        env2.insert("SEARCH_EF_SEARCH", "1001");
+        assert!(
+            matches!(load(&env2), Err(ConfigError::Validation(f, _)) if f == "search.ef_search")
+        );
+    }
+
+    #[test]
+    fn fails_when_search_embed_timeout_ms_out_of_range() {
+        let mut env = mock_env();
+        env.insert("SEARCH_EMBED_TIMEOUT_MS", "99");
+        assert!(
+            matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "search.embed_timeout_ms")
+        );
+
+        let mut env2 = mock_env();
+        env2.insert("SEARCH_EMBED_TIMEOUT_MS", "30001");
+        assert!(
+            matches!(load(&env2), Err(ConfigError::Validation(f, _)) if f == "search.embed_timeout_ms")
+        );
+    }
+
+    #[test]
+    fn fails_when_search_statement_timeout_ms_out_of_range() {
+        let mut env = mock_env();
+        env.insert("SEARCH_STATEMENT_TIMEOUT_MS", "99");
+        assert!(
+            matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "search.statement_timeout_ms")
+        );
+
+        let mut env2 = mock_env();
+        env2.insert("SEARCH_STATEMENT_TIMEOUT_MS", "60001");
+        assert!(
+            matches!(load(&env2), Err(ConfigError::Validation(f, _)) if f == "search.statement_timeout_ms")
+        );
+    }
+
+    #[test]
+    fn fails_when_search_query_max_chars_out_of_range() {
+        let mut env = mock_env();
+        env.insert("SEARCH_QUERY_MAX_CHARS", "0");
+        assert!(
+            matches!(load(&env), Err(ConfigError::Validation(f, _)) if f == "search.query_max_chars")
+        );
+
+        let mut env2 = mock_env();
+        env2.insert("SEARCH_QUERY_MAX_CHARS", "8001");
+        assert!(
+            matches!(load(&env2), Err(ConfigError::Validation(f, _)) if f == "search.query_max_chars")
         );
     }
 }

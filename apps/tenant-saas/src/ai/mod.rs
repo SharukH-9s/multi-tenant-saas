@@ -30,6 +30,7 @@ pub fn build_embedder(cfg: &IngestionConfig) -> Result<Arc<dyn EmbeddingProvider
                 cfg.embedding_model.clone(),
                 cfg.embedding_dim,
                 Duration::from_secs(cfg.embedding_timeout_secs),
+                cfg.embedding_api_version.as_deref(),
             )
             .map_err(|_| AppError::Internal("embedding client init failed".into()))?;
             Ok(Arc::new(embedder))

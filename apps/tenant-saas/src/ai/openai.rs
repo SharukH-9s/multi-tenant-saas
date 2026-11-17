@@ -47,6 +47,7 @@ impl OpenAiEmbedder {
         model: String,
         dim: usize,
         timeout: Duration,
+        api_version: Option<&str>,
     ) -> Result<Self, reqwest::Error> {
         let client = reqwest::Client::builder()
             .timeout(timeout)
@@ -56,9 +57,13 @@ impl OpenAiEmbedder {
             .filter(|b| !b.trim().is_empty())
             .unwrap_or(DEFAULT_BASE_URL)
             .trim_end_matches('/');
+        let url = match api_version.filter(|v| !v.trim().is_empty()) {
+            Some(v) => format!("{base}/embeddings?api-version={v}"),
+            None => format!("{base}/embeddings"),
+        };
         Ok(Self {
             client,
-            url: format!("{base}/embeddings"),
+            url,
             api_key,
             model,
             dim,
@@ -234,6 +239,7 @@ mod tests {
             "text-embedding-3-small".into(),
             DIM,
             Duration::from_secs(5),
+            None,
         )
         .unwrap()
     }
@@ -267,6 +273,37 @@ mod tests {
     async fn run_status(code: u16) -> EmbeddingError {
         let base = serve(status(code)).await;
         embedder(&base).embed(&inputs(1)).await.unwrap_err()
+    }
+
+    #[test]
+    fn api_version_is_appended_as_query_param() {
+        let e = OpenAiEmbedder::new(
+            Some("https://my-resource.openai.azure.com/openai/deployments/text-embedding-3-small"),
+            "key".into(),
+            "text-embedding-3-small".into(),
+            DIM,
+            Duration::from_secs(5),
+            Some("2024-02-01"),
+        )
+        .unwrap();
+        assert_eq!(
+            e.url,
+            "https://my-resource.openai.azure.com/openai/deployments/text-embedding-3-small/embeddings?api-version=2024-02-01"
+        );
+    }
+
+    #[test]
+    fn no_api_version_gives_plain_embeddings_url() {
+        let e = OpenAiEmbedder::new(
+            None,
+            "key".into(),
+            "text-embedding-3-small".into(),
+            DIM,
+            Duration::from_secs(5),
+            None,
+        )
+        .unwrap();
+        assert_eq!(e.url, "https://api.openai.com/v1/embeddings");
     }
 
     #[tokio::test]
@@ -431,6 +468,7 @@ mod tests {
             "m".into(),
             DIM,
             Duration::from_millis(200),
+            None,
         )
         .unwrap();
         let err = e.embed(&inputs(1)).await.unwrap_err();
