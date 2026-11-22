@@ -83,16 +83,9 @@ async fn dedicated_schema_end_to_end_and_rls() {
     .unwrap();
 
     sqlx::query(sqlx::AssertSqlSafe(
-        format!("ALTER TABLE {schema_name}.document_chunks FORCE ROW LEVEL SECURITY").as_str(),
-    ))
-    .execute(owner)
-    .await
-    .unwrap();
-
-    sqlx::query(sqlx::AssertSqlSafe(
         format!(
             "CREATE POLICY chunk_sel ON {schema_name}.document_chunks \
-                FOR SELECT TO app_runtime \
+                FOR SELECT \
                 USING (tenant_id = (SELECT app_tenant_id()))"
         )
         .as_str(),
@@ -104,7 +97,7 @@ async fn dedicated_schema_end_to_end_and_rls() {
     sqlx::query(sqlx::AssertSqlSafe(
         format!(
             "CREATE POLICY chunk_ins ON {schema_name}.document_chunks \
-                FOR INSERT TO app_runtime \
+                FOR INSERT \
                 WITH CHECK (tenant_id = (SELECT app_tenant_id()))"
         )
         .as_str(),
@@ -116,7 +109,7 @@ async fn dedicated_schema_end_to_end_and_rls() {
     sqlx::query(sqlx::AssertSqlSafe(
         format!(
             "CREATE POLICY chunk_del ON {schema_name}.document_chunks \
-                FOR DELETE TO app_runtime \
+                FOR DELETE \
                 USING (tenant_id = (SELECT app_tenant_id()))"
         )
         .as_str(),

@@ -93,12 +93,14 @@ async fn dedicated_schema_tightened_constraint_and_promotion_columns() {
 
     // 2. Verify promotion_fenced defaults to false and dedicated_schema defaults to NULL
     let tenant_id = app.create_tenant().await;
-    let (fenced, schema): (bool, Option<String>) =
+    let (fenced, schema): (bool, Option<String>) = {
+        let mut tx = app.owner_scoped_tx(tenant_id, Uuid::nil()).await;
         sqlx::query_as("SELECT promotion_fenced, dedicated_schema FROM tenants WHERE id = $1")
             .bind(tenant_id)
-            .fetch_one(owner)
+            .fetch_one(&mut *tx)
             .await
-            .unwrap();
+            .unwrap()
+    };
     assert!(!fenced, "promotion_fenced must default to false");
     assert!(schema.is_none(), "dedicated_schema must default to NULL");
 
