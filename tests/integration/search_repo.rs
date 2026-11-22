@@ -7,6 +7,7 @@ use common_config::SearchConfig;
 use common_database::{begin_tenant_tx, Tx};
 use common_errors::AppError;
 use tenant_saas::{
+    domain::chunk::ChunkTarget,
     repositories::search_repo,
     services::ingestion_service::{self, ProcessOutcome},
 };
@@ -18,8 +19,8 @@ const TEXT: &[u8] =
     b"Zephyrquartz maintenance manual. The annual leave policy allows twenty days. \
 Contractors submit invoices monthly. SKU-4471 is the replacement valve.";
 
-/// The shared chunk table used by all unpromoted test tenants.
-const SHARED_TABLE: &str = "public.document_chunks";
+/// The shared chunk target used by all unpromoted test tenants.
+const SHARED_TARGET: &ChunkTarget = &ChunkTarget::Shared;
 
 async fn ingested() -> Option<Fixture> {
     let f = fixture("manual.txt", TEXT).await?;
@@ -64,7 +65,7 @@ async fn apply_settings_enables_relaxed_order_iterative_scan() {
     search_repo::apply_settings(&mut tx, &SearchConfig::default())
         .await
         .unwrap();
-    search_repo::vector_candidates(&mut tx, SHARED_TABLE, f.tenant_id, &v, None, 5)
+    search_repo::vector_candidates(&mut tx, SHARED_TARGET, f.tenant_id, &v, None, 5)
         .await
         .unwrap();
     let shown: String = sqlx::query_scalar("SHOW hnsw.iterative_scan")
@@ -85,7 +86,7 @@ async fn relaxed_is_never_a_working_iterative_scan_value() {
     if set.is_err() {
         return; // library already loaded on this connection: value rejected
     }
-    let _ = search_repo::vector_candidates(&mut tx, SHARED_TABLE, f.tenant_id, &v, None, 5).await;
+    let _ = search_repo::vector_candidates(&mut tx, SHARED_TARGET, f.tenant_id, &v, None, 5).await;
     let shown: Result<String, _> = sqlx::query_scalar("SHOW hnsw.iterative_scan")
         .fetch_one(&mut *tx)
         .await;
@@ -100,7 +101,7 @@ async fn vector_search_with_own_vector_ranks_that_chunk_first() {
     let (id, content) = chunk_id(&f).await;
     let v = embed(&f, &content).await;
     let mut tx = tx_for(&f, f.tenant_id).await;
-    let out = search_repo::vector_candidates(&mut tx, SHARED_TABLE, f.tenant_id, &v, None, 5)
+    let out = search_repo::vector_candidates(&mut tx, SHARED_TARGET, f.tenant_id, &v, None, 5)
         .await
         .unwrap();
     assert_eq!(out[0].chunk_id, id);
@@ -112,19 +113,25 @@ async fn lexical_search_finds_word_and_returns_nothing_for_missing_word() {
     let Some(f) = ingested().await else { return };
     let (id, _) = chunk_id(&f).await;
     let mut tx = tx_for(&f, f.tenant_id).await;
-    let hit =
-        search_repo::lexical_candidates(&mut tx, SHARED_TABLE, f.tenant_id, "zephyrquartz", None, 5)
-            .await
-            .unwrap();
+    let hit = search_repo::lexical_candidates(
+        &mut tx,
+        SHARED_TARGET,
+        f.tenant_id,
+        "zephyrquartz",
+        None,
+        5,
+    )
+    .await
+    .unwrap();
     assert_eq!(hit[0].chunk_id, id);
     let ident =
-        search_repo::lexical_candidates(&mut tx, SHARED_TABLE, f.tenant_id, "SKU-4471", None, 5)
+        search_repo::lexical_candidates(&mut tx, SHARED_TARGET, f.tenant_id, "SKU-4471", None, 5)
             .await
             .unwrap();
     assert_eq!(ident.len(), 1);
     let none = search_repo::lexical_candidates(
         &mut tx,
-        SHARED_TABLE,
+        SHARED_TARGET,
         f.tenant_id,
         "nonexistentwordxyz",
         None,
@@ -140,7 +147,7 @@ async fn stop_words_and_odd_syntax_never_error() {
     let Some(f) = ingested().await else { return };
     let mut tx = tx_for(&f, f.tenant_id).await;
     let stop =
-        search_repo::lexical_candidates(&mut tx, SHARED_TABLE, f.tenant_id, "the and of", None, 5)
+        search_repo::lexical_candidates(&mut tx, SHARED_TARGET, f.tenant_id, "the and of", None, 5)
             .await
             .unwrap();
     assert!(stop.is_empty());
@@ -151,7 +158,7 @@ async fn stop_words_and_odd_syntax_never_error() {
         "a & | ! (",
         "\u{27}",
     ] {
-        search_repo::lexical_candidates(&mut tx, SHARED_TABLE, f.tenant_id, q, None, 5)
+        search_repo::lexical_candidates(&mut tx, SHARED_TARGET, f.tenant_id, q, None, 5)
             .await
             .unwrap_or_else(|e| panic!("query {q:?} failed: {e:?}"));
     }
@@ -165,12 +172,18 @@ async fn document_filter_limits_both_branches_and_does_not_leak() {
     let mut tx = tx_for(&a, a.tenant_id).await;
 
     let own = [a.document_id];
-    let lex =
-        search_repo::lexical_candidates(&mut tx, SHARED_TABLE, a.tenant_id, "zephyrquartz", Some(&own), 5)
-            .await
-            .unwrap();
+    let lex = search_repo::lexical_candidates(
+        &mut tx,
+        SHARED_TARGET,
+        a.tenant_id,
+        "zephyrquartz",
+        Some(&own),
+        5,
+    )
+    .await
+    .unwrap();
     let vec =
-        search_repo::vector_candidates(&mut tx, SHARED_TABLE, a.tenant_id, &v, Some(&own), 5)
+        search_repo::vector_candidates(&mut tx, SHARED_TARGET, a.tenant_id, &v, Some(&own), 5)
             .await
             .unwrap();
     assert_eq!(lex.len(), 1);
@@ -180,7 +193,7 @@ async fn document_filter_limits_both_branches_and_does_not_leak() {
     let foreign = [b.document_id];
     let lex = search_repo::lexical_candidates(
         &mut tx,
-        SHARED_TABLE,
+        SHARED_TARGET,
         a.tenant_id,
         "zephyrquartz",
         Some(&foreign),
@@ -189,7 +202,7 @@ async fn document_filter_limits_both_branches_and_does_not_leak() {
     .await
     .unwrap();
     let vec =
-        search_repo::vector_candidates(&mut tx, SHARED_TABLE, a.tenant_id, &v, Some(&foreign), 5)
+        search_repo::vector_candidates(&mut tx, SHARED_TARGET, a.tenant_id, &v, Some(&foreign), 5)
             .await
             .unwrap();
     assert!(lex.is_empty() && vec.is_empty());
@@ -200,10 +213,16 @@ async fn rls_blocks_other_tenant_even_with_explicit_tenant_id() {
     let Some(a) = ingested().await else { return };
     let Some(b) = ingested().await else { return };
     let mut tx = tx_for(&b, b.tenant_id).await;
-    let out =
-        search_repo::lexical_candidates(&mut tx, SHARED_TABLE, a.tenant_id, "zephyrquartz", None, 5)
-            .await
-            .unwrap();
+    let out = search_repo::lexical_candidates(
+        &mut tx,
+        SHARED_TARGET,
+        a.tenant_id,
+        "zephyrquartz",
+        None,
+        5,
+    )
+    .await
+    .unwrap();
     assert!(out.is_empty());
 }
 
@@ -212,7 +231,7 @@ async fn hydrate_returns_plain_snippet_and_drops_deleted_documents() {
     let Some(f) = ingested().await else { return };
     let (id, _) = chunk_id(&f).await;
     let mut tx = tx_for(&f, f.tenant_id).await;
-    let rows = search_repo::hydrate(&mut tx, SHARED_TABLE, f.tenant_id, &[id], "annual leave")
+    let rows = search_repo::hydrate(&mut tx, SHARED_TARGET, f.tenant_id, &[id], "annual leave")
         .await
         .unwrap();
     assert_eq!(rows.len(), 1);
@@ -226,7 +245,7 @@ async fn hydrate_returns_plain_snippet_and_drops_deleted_documents() {
         .await
         .unwrap();
     let mut tx = tx_for(&f, f.tenant_id).await;
-    let rows = search_repo::hydrate(&mut tx, SHARED_TABLE, f.tenant_id, &[id], "annual leave")
+    let rows = search_repo::hydrate(&mut tx, SHARED_TARGET, f.tenant_id, &[id], "annual leave")
         .await
         .unwrap();
     assert!(rows.is_empty());

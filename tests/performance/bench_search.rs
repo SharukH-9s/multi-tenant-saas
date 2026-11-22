@@ -174,10 +174,18 @@ async fn main() -> anyhow::Result<()> {
     // Pre-warm Cache
     // -----------------------------------------------------------------------
     println!("\n=== Pre-warming Shared and Dedicated Relations ===");
-    let _ = sqlx::query("SELECT pg_prewarm('public.document_chunks')").execute(&pool).await;
-    let _ = sqlx::query("SELECT pg_prewarm('public.document_chunks_embedding_hnsw_idx')").execute(&pool).await;
-    let _ = sqlx::query("SELECT pg_prewarm('tenant_isolated.document_chunks')").execute(&pool).await;
-    let _ = sqlx::query("SELECT pg_prewarm('tenant_isolated.document_chunks_embedding_hnsw_idx')").execute(&pool).await;
+    let _ = sqlx::query("SELECT pg_prewarm('public.document_chunks')")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("SELECT pg_prewarm('public.document_chunks_embedding_hnsw_idx')")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("SELECT pg_prewarm('tenant_isolated.document_chunks')")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("SELECT pg_prewarm('tenant_isolated.document_chunks_embedding_hnsw_idx')")
+        .execute(&pool)
+        .await;
     println!("Pre-warm complete.");
 
     // -----------------------------------------------------------------------
@@ -229,7 +237,11 @@ async fn main() -> anyhow::Result<()> {
             vector_literal(&perturbed)
         })
         .collect();
-    println!("Generated {} random and {} representative queries.", random_queries.len(), representative_queries.len());
+    println!(
+        "Generated {} random and {} representative queries.",
+        random_queries.len(),
+        representative_queries.len()
+    );
 
     // -----------------------------------------------------------------------
     // 3. ANN Recall: Shared vs Dedicated on Both Query Distributions
@@ -237,15 +249,23 @@ async fn main() -> anyhow::Result<()> {
     if !skip_recall {
         println!("\n=== ANN Recall Study: Shared Table vs Isolated Dedicated Table ===");
 
-        for (dist_name, q_list) in [("Uniform Random", &random_queries), ("Representative (In-Distribution)", &representative_queries)] {
-            println!("\n>>> Evaluating Query Distribution: [{dist_name}] ({} queries, top-30) <<<", q_list.len());
+        for (dist_name, q_list) in [
+            ("Uniform Random", &random_queries),
+            ("Representative (In-Distribution)", &representative_queries),
+        ] {
+            println!(
+                "\n>>> Evaluating Query Distribution: [{dist_name}] ({} queries, top-30) <<<",
+                q_list.len()
+            );
 
             // Compute Ground Truth (Exact Brute-Force)
             println!("  Computing exact ground truth (enable_indexscan = off)...");
             let mut ground_truth_sets = Vec::with_capacity(q_list.len());
             for q_vec in q_list {
                 let mut tx = pool.begin().await?;
-                sqlx::query("SET LOCAL enable_indexscan = off").execute(&mut *tx).await?;
+                sqlx::query("SET LOCAL enable_indexscan = off")
+                    .execute(&mut *tx)
+                    .await?;
                 let rows: Vec<(Uuid,)> = sqlx::query_as(SHARED_VECTOR_SQL)
                     .bind(large_tenant)
                     .bind(q_vec)
@@ -259,7 +279,12 @@ async fn main() -> anyhow::Result<()> {
 
             // Benchmark Configurations to Test
             let configs = vec![
-                ("100", "20000", "relaxed_order", "Baseline (ef=100, scan=20k)"),
+                (
+                    "100",
+                    "20000",
+                    "relaxed_order",
+                    "Baseline (ef=100, scan=20k)",
+                ),
                 ("300", "50000", "relaxed_order", "Tuned (ef=300, scan=50k)"),
             ];
 
@@ -270,8 +295,12 @@ async fn main() -> anyhow::Result<()> {
 
                 for (q_vec, gt) in q_list.iter().zip(&ground_truth_sets) {
                     let mut tx = pool.begin().await?;
-                    sqlx::query("SET LOCAL enable_seqscan = off").execute(&mut *tx).await?;
-                    sqlx::query("SET LOCAL enable_indexscan = on").execute(&mut *tx).await?;
+                    sqlx::query("SET LOCAL enable_seqscan = off")
+                        .execute(&mut *tx)
+                        .await?;
+                    sqlx::query("SET LOCAL enable_indexscan = on")
+                        .execute(&mut *tx)
+                        .await?;
                     sqlx::query(
                         "SELECT set_config('hnsw.ef_search', $1, true), \
                                 set_config('hnsw.iterative_scan', $2, true), \
@@ -317,8 +346,12 @@ async fn main() -> anyhow::Result<()> {
 
                 for (q_vec, gt) in q_list.iter().zip(&ground_truth_sets) {
                     let mut tx = pool.begin().await?;
-                    sqlx::query("SET LOCAL enable_seqscan = off").execute(&mut *tx).await?;
-                    sqlx::query("SET LOCAL enable_indexscan = on").execute(&mut *tx).await?;
+                    sqlx::query("SET LOCAL enable_seqscan = off")
+                        .execute(&mut *tx)
+                        .await?;
+                    sqlx::query("SET LOCAL enable_indexscan = on")
+                        .execute(&mut *tx)
+                        .await?;
                     sqlx::query(
                         "SELECT set_config('hnsw.ef_search', $1, true), \
                                 set_config('hnsw.iterative_scan', $2, true), \
@@ -389,7 +422,12 @@ async fn main() -> anyhow::Result<()> {
              ) \
              SELECT id FROM nearest ORDER BY distance, id"
         );
-        explain(&pool, "Shared Table Vector Candidate Plan (Representative Vector)", q_shared).await?;
+        explain(
+            &pool,
+            "Shared Table Vector Candidate Plan (Representative Vector)",
+            q_shared,
+        )
+        .await?;
 
         let q_dedicated = format!(
             "EXPLAIN (ANALYZE, BUFFERS) \
@@ -401,7 +439,12 @@ async fn main() -> anyhow::Result<()> {
              ) \
              SELECT id FROM nearest ORDER BY distance, id"
         );
-        explain(&pool, "Dedicated Table Vector Candidate Plan (Representative Vector)", q_dedicated).await?;
+        explain(
+            &pool,
+            "Dedicated Table Vector Candidate Plan (Representative Vector)",
+            q_dedicated,
+        )
+        .await?;
     }
 
     // -----------------------------------------------------------------------

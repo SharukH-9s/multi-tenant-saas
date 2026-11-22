@@ -6,14 +6,14 @@
 //!
 //! # Dynamic table routing (Task 11)
 //!
-//! All queries that touch `document_chunks` accept a `chunk_table: &str`
-//! argument — the fully-qualified identifier produced by `ChunkTarget::table()`:
-//! either `"public.document_chunks"` (shared tenants, the default) or
-//! `"tenant_<id>.document_chunks"` (promoted tenants).
+//! All queries that touch `document_chunks` accept a `target: &ChunkTarget`
+//! argument — the validated enum representing either `Shared`
+//! (`public.document_chunks`) or `Dedicated(ValidatedSchema)`
+//! (`tenant_<id>.document_chunks`).
 //!
-//! The value is validated by `ValidatedSchema` at `ChunkTarget` construction time
-//! (a regex check + DB-column origin), so it is safe to interpolate into SQL
-//! query strings here without further escaping (see §3 of the redesign analysis).
+//! The table identifier is extracted via `target.table()` directly at the SQL
+//! construction site. Because `ChunkTarget` guarantees a valid identifier at
+//! compile- and construction-time, SQL injection is structurally prevented.
 //!
 //! `hydrate` always joins `public.documents` explicitly, because the `documents`
 //! table is never moved to a dedicated schema — the FK in
@@ -25,7 +25,7 @@ use common_errors::AppError;
 use uuid::Uuid;
 
 use super::{chunk_repo::vector_literal, db_error::map_db_error};
-use crate::domain::search::Candidate;
+use crate::domain::{chunk::ChunkTarget, search::Candidate};
 
 /// A hydrated search result row. `content` is the full chunk text, kept for
 /// Phase 6; the HTTP layer exposes only `snippet` (S10).
@@ -60,17 +60,15 @@ pub async fn apply_settings(tx: &mut Tx, cfg: &SearchConfig) -> Result<(), AppEr
 
 /// Nearest chunks by cosine distance. The CTE is MATERIALIZED and re-sorted so
 /// the order is deterministic when distances tie (F2).
-///
-/// `chunk_table` must be the value of `ChunkTarget::table()` — validated at
-/// construction, safe to interpolate into SQL.
 pub async fn vector_candidates(
     tx: &mut Tx,
-    chunk_table: &str,
+    target: &ChunkTarget,
     tenant_id: Uuid,
     query_vec: &[f32],
     doc_filter: Option<&[Uuid]>,
     n: i64,
 ) -> Result<Vec<Candidate>, AppError> {
+    let chunk_table = target.table();
     let sql = format!(
         "WITH nearest AS MATERIALIZED ( \
              SELECT id, embedding <=> $2::vector AS distance \
@@ -95,17 +93,15 @@ pub async fn vector_candidates(
 
 /// Full-text matches ranked by `ts_rank_cd` (not BM25, L6). A query that
 /// reduces to nothing, such as only stop words, returns no rows (F6).
-///
-/// `chunk_table` must be the value of `ChunkTarget::table()` — validated at
-/// construction, safe to interpolate into SQL.
 pub async fn lexical_candidates(
     tx: &mut Tx,
-    chunk_table: &str,
+    target: &ChunkTarget,
     tenant_id: Uuid,
     query: &str,
     doc_filter: Option<&[Uuid]>,
     n: i64,
 ) -> Result<Vec<Candidate>, AppError> {
+    let chunk_table = target.table();
     let sql = format!(
         "SELECT c.id \
            FROM {chunk_table} c, websearch_to_tsquery('english', $2) AS q \
@@ -130,17 +126,17 @@ pub async fn lexical_candidates(
 /// are dropped here (S4), as are chunks deleted since the candidate queries.
 /// Row order is not significant: the caller restores RRF order.
 ///
-/// `chunk_table` is the fully-qualified chunk table identifier from
-/// `ChunkTarget::table()`. `documents` is **always** qualified as
-/// `public.documents` — the `documents` table is never promoted to a dedicated
-/// schema; the FK in `tenant_<id>.document_chunks` still points there.
+/// `documents` is **always** qualified as `public.documents` — the `documents`
+/// table is never promoted to a dedicated schema; the FK in
+/// `tenant_<id>.document_chunks` still points there.
 pub async fn hydrate(
     tx: &mut Tx,
-    chunk_table: &str,
+    target: &ChunkTarget,
     tenant_id: Uuid,
     chunk_ids: &[Uuid],
     query: &str,
 ) -> Result<Vec<HitRow>, AppError> {
+    let chunk_table = target.table();
     let sql = format!(
         "SELECT c.id, c.document_id, c.chunk_index, c.content, c.metadata, \
                 c.embedding_version, d.title, \

@@ -1,4 +1,7 @@
-//! Phase 5 T1: the full-text column and the two search indexes (migration 006).
+//! Phase 5 T1 & T9/T10: search schema, indexes, and dedicated schema migration invariants.
+
+use test_support::TestApp;
+use uuid::Uuid;
 
 use crate::ingestion_support::{fixture, SIMPLE_TXT};
 
@@ -47,9 +50,12 @@ async fn search_indexes_exist_with_expected_definitions() {
     let Some(f) = fixture("simple.txt", SIMPLE_TXT).await else {
         return;
     };
+    // Must restrict to schemaname = 'public' so parallel dedicated-schema tests
+    // with identically named indexes in other schemas do not conflict.
     let defs: Vec<(String, String)> = sqlx::query_as(
         "SELECT indexname, indexdef FROM pg_indexes \
-          WHERE tablename = 'document_chunks' \
+          WHERE schemaname = 'public' \
+            AND tablename = 'document_chunks' \
             AND indexname IN ('document_chunks_tsv_idx', 'document_chunks_embedding_hnsw_idx')",
     )
     .fetch_all(f.app.owner())
@@ -64,4 +70,62 @@ async fn search_indexes_exist_with_expected_definitions() {
             assert!(def.contains("vector_cosine_ops"), "{def}");
         }
     }
+}
+
+#[tokio::test]
+async fn dedicated_schema_tightened_constraint_and_promotion_columns() {
+    let Some(app) = TestApp::spawn().await else {
+        return;
+    };
+    let owner = app.owner();
+
+    // 1. Verify partial index tenants_dedicated_schema_idx exists
+    let (idx_count,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM pg_indexes \
+          WHERE schemaname = 'public' \
+            AND tablename = 'tenants' \
+            AND indexname = 'tenants_dedicated_schema_idx'",
+    )
+    .fetch_one(owner)
+    .await
+    .unwrap();
+    assert_eq!(idx_count, 1, "tenants_dedicated_schema_idx must exist");
+
+    // 2. Verify promotion_fenced defaults to false and dedicated_schema defaults to NULL
+    let tenant_id = app.create_tenant().await;
+    let (fenced, schema): (bool, Option<String>) =
+        sqlx::query_as("SELECT promotion_fenced, dedicated_schema FROM tenants WHERE id = $1")
+            .bind(tenant_id)
+            .fetch_one(owner)
+            .await
+            .unwrap();
+    assert!(!fenced, "promotion_fenced must default to false");
+    assert!(schema.is_none(), "dedicated_schema must default to NULL");
+
+    // 3. Verify tightened CHECK constraint accepts up to 56 suffix chars (63 bytes total)
+    let valid_schema = format!("tenant_{}", "a".repeat(56));
+    let mut tx = app.owner_scoped_tx(tenant_id, Uuid::nil()).await;
+    let res = sqlx::query("UPDATE tenants SET dedicated_schema = $2 WHERE id = $1")
+        .bind(tenant_id)
+        .bind(&valid_schema)
+        .execute(&mut *tx)
+        .await;
+    assert!(res.is_ok(), "56-char suffix must be accepted: {res:?}");
+    tx.rollback().await.unwrap();
+
+    // 4. Verify tightened CHECK constraint rejects 57 suffix chars (64 bytes total)
+    let invalid_schema = format!("tenant_{}", "a".repeat(57));
+    let mut tx = app.owner_scoped_tx(tenant_id, Uuid::nil()).await;
+    let err = sqlx::query("UPDATE tenants SET dedicated_schema = $2 WHERE id = $1")
+        .bind(tenant_id)
+        .bind(&invalid_schema)
+        .execute(&mut *tx)
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("tenants_dedicated_schema_format")
+            || err.to_string().contains("violates check constraint"),
+        "57-char suffix must violate CHECK constraint: {err}"
+    );
+    tx.rollback().await.unwrap();
 }

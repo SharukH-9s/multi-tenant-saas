@@ -238,7 +238,7 @@ async fn lock_processing_document(tx: &mut Tx, document_id: Uuid) -> Result<bool
 /// or document deleted/not processing).
 pub async fn complete(
     tx: &mut Tx,
-    chunk_table: &str,
+    target: &crate::domain::chunk::ChunkTarget,
     job: &ClaimedJob,
     model: &str,
     version: &str,
@@ -265,7 +265,7 @@ pub async fn complete(
 
     super::chunk_repo::replace_for_document(
         tx,
-        chunk_table,
+        target,
         job.tenant_id,
         job.document_id,
         model,

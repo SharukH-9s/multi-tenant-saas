@@ -372,9 +372,10 @@ async fn stale_worker_superseded() {
         embedding: &emb_b,
         metadata: serde_json::json!({}),
     }];
+    let target = tenant_saas::domain::chunk::ChunkTarget::Shared;
     let ok_b = ingestion_repo::complete(
         &mut tx_b_persist,
-        "public.document_chunks",
+        &target,
         &claimed_b,
         "text-embedding-3-small",
         "p4-v1",
@@ -407,7 +408,7 @@ async fn stale_worker_superseded() {
     }];
     let ok_a = ingestion_repo::complete(
         &mut tx_a_persist,
-        "public.document_chunks",
+        &target,
         &claimed_a,
         "text-embedding-3-small",
         "p4-v1",

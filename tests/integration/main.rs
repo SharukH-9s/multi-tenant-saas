@@ -1,4 +1,5 @@
 mod auth;
+mod dedicated_schema;
 mod documents;
 mod health;
 mod ingestion_claim;

@@ -255,7 +255,10 @@ mod tests {
         };
         let rc = run(Some(row)).unwrap();
         assert!(!rc.chunk_target.is_shared());
-        assert_eq!(rc.chunk_target.table(), "tenant_018f1a2b3c4d.document_chunks");
+        assert_eq!(
+            rc.chunk_target.table(),
+            "tenant_018f1a2b3c4d.document_chunks"
+        );
     }
 
     #[test]

@@ -53,7 +53,7 @@ jobs:
           echo "begin_system_tenant_tx grep guard: PASS"
       - name: Verify pure ingestion and AI modules do not touch the database
         run: |
-          hits=$(grep -rn "sqlx" apps/tenant-saas/src/ingestion/ apps/tenant-saas/src/ai/ apps/tenant-saas/src/domain/search.rs || true)
+          hits=$(grep -rn "sqlx" apps/tenant-saas/src/ingestion/ apps/tenant-saas/src/ai/ apps/tenant-saas/src/domain/ || true)
           if [ -n "$hits" ]; then
             echo "FORBIDDEN: sqlx referenced in a pure module:"
             echo "$hits"

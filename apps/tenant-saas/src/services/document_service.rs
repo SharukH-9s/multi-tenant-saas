@@ -267,7 +267,7 @@ pub async fn delete(state: &AppState, ctx: &RequestContext, id: Uuid) -> Result<
     // Chunks go in the same commit as `deleting`. The job is left alone (D9):
     // the worker's persist step requires `processing`, so a late worker writes
     // nothing, and the claim or the sweeper cancels the job.
-    chunk_repo::delete_for_document(&mut tx, &ctx.chunk_target.table(), id).await?;
+    chunk_repo::delete_for_document(&mut tx, &ctx.chunk_target, id).await?;
     tx.commit().await?;
 
     // ── Step 2: delete the object from storage ──────────────────────────

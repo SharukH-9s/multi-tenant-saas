@@ -88,16 +88,13 @@ pub async fn search(
     let db_started = Instant::now();
     let tenant_id = ctx.tenant_id();
     let filter = q.document_ids.as_deref();
-    // Resolve the fully-qualified chunk table once per request; validated at
-    // RequestContext construction (ChunkTarget::from_db_opt → ValidatedSchema).
-    let chunk_table = ctx.chunk_target.table();
     let mut tx = begin_tenant_tx(&state.db, ctx).await?;
     search_repo::apply_settings(&mut tx, cfg).await?;
     let vector = match &query_vec {
         Some(v) => {
             search_repo::vector_candidates(
                 &mut tx,
-                &chunk_table,
+                &ctx.chunk_target,
                 tenant_id,
                 v,
                 filter,
@@ -109,7 +106,7 @@ pub async fn search(
     };
     let lexical = search_repo::lexical_candidates(
         &mut tx,
-        &chunk_table,
+        &ctx.chunk_target,
         tenant_id,
         &q.text,
         filter,
@@ -119,7 +116,7 @@ pub async fn search(
 
     let fused = rrf(&vector, &lexical, cfg.rrf_k, q.limit);
     let ids: Vec<Uuid> = fused.iter().map(|f| f.chunk_id).collect();
-    let rows = search_repo::hydrate(&mut tx, &chunk_table, tenant_id, &ids, &q.text).await?;
+    let rows = search_repo::hydrate(&mut tx, &ctx.chunk_target, tenant_id, &ids, &q.text).await?;
     tx.commit().await?;
     let db_ms = db_started.elapsed().as_millis() as u64;
 

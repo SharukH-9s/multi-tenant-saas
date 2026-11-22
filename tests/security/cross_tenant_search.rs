@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
 use tenant_saas::{
     auth::request_context::RequestContext,
+    domain::chunk::ChunkTarget,
     repositories::search_repo,
     services::{
         ingestion_service::{self, IngestionDeps, ProcessOutcome},
@@ -202,15 +203,15 @@ async fn rls_stops_repository_queries_even_with_the_wrong_tenant_bound() {
     let mut tx = begin_tenant_tx(&app.state.db, &ctx).await.unwrap();
     let vec = vec![0.1_f32; 1536];
     // All test tenants are unpromoted — shared table.
-    let chunk_table = "public.document_chunks";
+    let chunk_target = ChunkTarget::Shared;
 
-    let lex = search_repo::lexical_candidates(&mut tx, chunk_table, a.id, "harborlight", None, 10)
-        .await
-        .unwrap();
-    let nearest =
-        search_repo::vector_candidates(&mut tx, chunk_table, a.id, &vec, None, 10)
+    let lex =
+        search_repo::lexical_candidates(&mut tx, &chunk_target, a.id, "harborlight", None, 10)
             .await
             .unwrap();
+    let nearest = search_repo::vector_candidates(&mut tx, &chunk_target, a.id, &vec, None, 10)
+        .await
+        .unwrap();
     assert!(lex.is_empty() && nearest.is_empty());
 
     // Even hydrating A's real chunk ids returns nothing under B's context.
@@ -222,7 +223,7 @@ async fn rls_stops_repository_queries_even_with_the_wrong_tenant_bound() {
             .unwrap();
     let ids: Vec<Uuid> = a_chunks.into_iter().map(|r| r.0).collect();
     assert!(!ids.is_empty());
-    let rows = search_repo::hydrate(&mut tx, chunk_table, a.id, &ids, "harborlight")
+    let rows = search_repo::hydrate(&mut tx, &chunk_target, a.id, &ids, "harborlight")
         .await
         .unwrap();
     assert!(rows.is_empty());

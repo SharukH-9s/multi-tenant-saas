@@ -6,6 +6,7 @@ use common_errors::AppError;
 use uuid::Uuid;
 
 use super::db_error::map_db_error;
+use crate::domain::chunk::ChunkTarget;
 
 pub struct NewChunk<'a> {
     pub index: i32,
@@ -34,9 +35,10 @@ pub fn vector_literal(v: &[f32]) -> String {
 /// RLS limits the delete to the caller's tenant.
 pub async fn delete_for_document(
     tx: &mut Tx,
-    chunk_table: &str,
+    target: &ChunkTarget,
     document_id: Uuid,
 ) -> Result<u64, AppError> {
+    let chunk_table = target.table();
     let sql = format!("DELETE FROM {chunk_table} WHERE document_id = $1");
     let result = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(document_id)
@@ -49,9 +51,10 @@ pub async fn delete_for_document(
 /// Returns the total chunk count for a document.
 pub async fn count_for_document(
     tx: &mut Tx,
-    chunk_table: &str,
+    target: &ChunkTarget,
     document_id: Uuid,
 ) -> Result<i64, AppError> {
+    let chunk_table = target.table();
     let sql = format!("SELECT COUNT(*) FROM {chunk_table} WHERE document_id = $1");
     let (count,): (i64,) = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(document_id)
@@ -64,18 +67,19 @@ pub async fn count_for_document(
 /// Deletes all chunks of the document, then inserts `chunks` in UNNEST batches of 200 (D8).
 pub async fn replace_for_document(
     tx: &mut Tx,
-    chunk_table: &str,
+    target: &ChunkTarget,
     tenant_id: Uuid,
     document_id: Uuid,
     model: &str,
     version: &str,
     chunks: &[NewChunk<'_>],
 ) -> Result<(), AppError> {
-    delete_for_document(tx, chunk_table, document_id).await?;
+    delete_for_document(tx, target, document_id).await?;
     if chunks.is_empty() {
         return Ok(());
     }
 
+    let chunk_table = target.table();
     let sql = format!(
         "INSERT INTO {chunk_table} \
             (tenant_id, document_id, chunk_index, content, token_count, \

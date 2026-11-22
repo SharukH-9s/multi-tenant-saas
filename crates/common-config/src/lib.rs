@@ -505,7 +505,8 @@ impl AppConfig {
                 embedding_timeout_secs: number(&get_env, "EMBEDDING_TIMEOUT_SECS", 30u64)?,
                 embedding_api_key: get_env("EMBEDDING_API_KEY").filter(|s| !s.trim().is_empty()),
                 embedding_base_url: get_env("EMBEDDING_BASE_URL").filter(|s| !s.trim().is_empty()),
-                embedding_api_version: get_env("EMBEDDING_API_VERSION").filter(|s| !s.trim().is_empty()),
+                embedding_api_version: get_env("EMBEDDING_API_VERSION")
+                    .filter(|s| !s.trim().is_empty()),
             },
             search: SearchConfig {
                 vector_candidates: number(&get_env, "SEARCH_VECTOR_CANDIDATES", 30usize)?,

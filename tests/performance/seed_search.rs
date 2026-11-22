@@ -42,10 +42,7 @@ impl Rng {
     }
 
     fn next_u64(&mut self) -> u64 {
-        let result = self.s[1]
-            .wrapping_mul(5)
-            .rotate_left(7)
-            .wrapping_mul(9);
+        let result = self.s[1].wrapping_mul(5).rotate_left(7).wrapping_mul(9);
         let t = self.s[1] << 17;
         self.s[2] ^= self.s[0];
         self.s[3] ^= self.s[1];
@@ -111,14 +108,55 @@ fn vector_literal(v: &[f32]) -> String {
 // Vocabulary for synthetic text
 // ---------------------------------------------------------------------------
 const VOCAB: &[&str] = &[
-    "document", "policy", "section", "clause", "paragraph", "appendix",
-    "requirement", "process", "system", "service", "configuration", "deployment",
-    "tenant", "user", "role", "permission", "resource", "endpoint", "token",
-    "audit", "compliance", "retention", "incident", "recovery", "backup",
-    "schedule", "threshold", "metric", "alert", "notification", "workflow",
-    "approval", "request", "response", "status", "code", "version", "release",
-    "environment", "infrastructure", "network", "security", "encryption", "key",
-    "certificate", "authentication", "authorization", "session", "access",
+    "document",
+    "policy",
+    "section",
+    "clause",
+    "paragraph",
+    "appendix",
+    "requirement",
+    "process",
+    "system",
+    "service",
+    "configuration",
+    "deployment",
+    "tenant",
+    "user",
+    "role",
+    "permission",
+    "resource",
+    "endpoint",
+    "token",
+    "audit",
+    "compliance",
+    "retention",
+    "incident",
+    "recovery",
+    "backup",
+    "schedule",
+    "threshold",
+    "metric",
+    "alert",
+    "notification",
+    "workflow",
+    "approval",
+    "request",
+    "response",
+    "status",
+    "code",
+    "version",
+    "release",
+    "environment",
+    "infrastructure",
+    "network",
+    "security",
+    "encryption",
+    "key",
+    "certificate",
+    "authentication",
+    "authorization",
+    "session",
+    "access",
 ];
 
 fn synthetic_content(chunk_idx: usize, doc_idx: usize, tenant_idx: usize, rng: &mut Rng) -> String {
@@ -128,7 +166,10 @@ fn synthetic_content(chunk_idx: usize, doc_idx: usize, tenant_idx: usize, rng: &
         .collect();
     format!(
         "Chunk {} of document {} (tenant {}). Reference {}. {}.",
-        chunk_idx, doc_idx, tenant_idx, identifier,
+        chunk_idx,
+        doc_idx,
+        tenant_idx,
+        identifier,
         words.join(" ")
     )
 }
@@ -248,8 +289,10 @@ async fn insert_chunks(
             .iter()
             .map(|(_, c, _)| c.split_whitespace().count() as i32)
             .collect();
-        let metadatas: Vec<&str> =
-            batch.iter().map(|_| r#"{"page_start":1,"page_end":1}"#).collect();
+        let metadatas: Vec<&str> = batch
+            .iter()
+            .map(|_| r#"{"page_start":1,"page_end":1}"#)
+            .collect();
 
         sqlx::query(
             "INSERT INTO document_chunks
@@ -421,16 +464,10 @@ async fn main() -> anyhow::Result<()> {
     let mut first_small_user_id = Uuid::nil();
 
     for st in 0..small_tenants {
-        let small_tenant_id = Uuid::from_u128(
-            (0xCAFE_BABE_u128 << 96)
-                | (((st as u128) + 1) << 48)
-                | (seed as u128),
-        );
-        let small_user_id = Uuid::from_u128(
-            (0xCAFE_FACE_u128 << 96)
-                | (((st as u128) + 1) << 48)
-                | (seed as u128),
-        );
+        let small_tenant_id =
+            Uuid::from_u128((0xCAFE_BABE_u128 << 96) | (((st as u128) + 1) << 48) | (seed as u128));
+        let small_user_id =
+            Uuid::from_u128((0xCAFE_FACE_u128 << 96) | (((st as u128) + 1) << 48) | (seed as u128));
         if st == 0 {
             first_small_tenant_id = small_tenant_id;
             first_small_user_id = small_user_id;
@@ -489,7 +526,10 @@ async fn main() -> anyhow::Result<()> {
 
     println!("\n=== Index sizes after seeding ===");
     for (name, size) in &rows {
-        println!("  {name}: {size} bytes ({:.2} MiB)", *size as f64 / 1_048_576.0);
+        println!(
+            "  {name}: {size} bytes ({:.2} MiB)",
+            *size as f64 / 1_048_576.0
+        );
     }
 
     let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM document_chunks")

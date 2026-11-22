@@ -214,22 +214,18 @@ pub async fn update(
 ///
 /// Returns `AppError::NotFound` when the tenant row does not exist (e.g. a
 /// stale event for a deleted tenant).
-pub async fn get_dedicated_schema(
-    tx: &mut Tx,
-    tenant_id: Uuid,
-) -> Result<ChunkTarget, AppError> {
+pub async fn get_dedicated_schema(tx: &mut Tx, tenant_id: Uuid) -> Result<ChunkTarget, AppError> {
     // fetch_optional returns Option<Option<String>>:
     //   outer None  = no row (tenant does not exist)
     //   inner None  = row exists, dedicated_schema IS NULL → Shared
     //   inner Some  = row exists with a dedicated schema name → Dedicated
-    let raw: Option<String> = sqlx::query_scalar(
-        "SELECT dedicated_schema FROM tenants WHERE id = $1",
-    )
-    .bind(tenant_id)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(map_db_error)?
-    .ok_or(AppError::NotFound)?;
+    let raw: Option<String> =
+        sqlx::query_scalar("SELECT dedicated_schema FROM tenants WHERE id = $1")
+            .bind(tenant_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(map_db_error)?
+            .ok_or(AppError::NotFound)?;
 
     ChunkTarget::from_db_opt(raw.as_deref())
 }

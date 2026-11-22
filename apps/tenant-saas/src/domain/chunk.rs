@@ -2,7 +2,7 @@
 //!
 //! `ChunkTarget` decides which table a chunk read or write hits.
 //! `ValidatedSchema` is a newtype that enforces the naming contract
-//! (`^tenant_[a-z0-9_]{1,63}$`) at construction so callers can interpolate
+//! (`^tenant_[a-z0-9_]{1,56}$`) at construction so callers can interpolate
 //! it directly into SQL query strings without further escaping or injection
 //! risk (see §3 of `dedicated-schema-redesign-analysis.md`).
 //!
@@ -12,18 +12,20 @@ use std::borrow::Cow;
 
 use common_errors::AppError;
 
-/// Maximum allowed length of the suffix that follows `tenant_` in a schema name
-/// (PostgreSQL's unquoted identifier limit is 63 bytes).
-const MAX_SCHEMA_SUFFIX_LEN: usize = 63;
+/// Maximum allowed length of the suffix that follows `tenant_` in a schema name.
+/// PostgreSQL's identifier limit (NAMEDATALEN - 1) is 63 bytes total; `tenant_`
+/// is 7 bytes, leaving at most 56 bytes for the suffix.
+const MAX_SCHEMA_SUFFIX_LEN: usize = 56;
 
 // ── ValidatedSchema ──────────────────────────────────────────────────────────
 
-/// A PostgreSQL schema name validated against `^tenant_[a-z0-9_]{1,63}$`.
+/// A PostgreSQL schema name validated against `^tenant_[a-z0-9_]{1,56}$`.
 ///
 /// The value is safe to interpolate into a SQL identifier — it was validated
 /// at construction time and can only originate from the
 /// `tenants.dedicated_schema` DB column, which carries the same regex as a
-/// CHECK constraint (migration `007_tenant_dedicated_schema.sql`).
+/// CHECK constraint (migrations `007` and `008`). Total length is guaranteed
+/// <= 63 bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedSchema(String);
 
@@ -40,7 +42,7 @@ impl ValidatedSchema {
         } else {
             Err(AppError::Internal(format!(
                 "dedicated_schema value '{}' violates the naming invariant \
-                 (^tenant_[a-z0-9_]{{1,63}}$); the DB CHECK constraint may \
+                 (^tenant_[a-z0-9_]{{1,56}}$); the DB CHECK constraint may \
                  have been bypassed",
                 raw
             )))
@@ -92,9 +94,7 @@ impl ChunkTarget {
     pub fn table(&self) -> Cow<'static, str> {
         match self {
             Self::Shared => Cow::Borrowed("public.document_chunks"),
-            Self::Dedicated(schema) => {
-                Cow::Owned(format!("{}.document_chunks", schema.as_str()))
-            }
+            Self::Dedicated(schema) => Cow::Owned(format!("{}.document_chunks", schema.as_str())),
         }
     }
 
@@ -107,8 +107,8 @@ impl ChunkTarget {
 // ── Validation ───────────────────────────────────────────────────────────────
 
 fn is_valid_schema(s: &str) -> bool {
-    // Pattern: ^tenant_[a-z0-9_]{1,63}$
-    // Must start with "tenant_", followed by 1–63 chars of [a-z0-9_].
+    // Pattern: ^tenant_[a-z0-9_]{1,56}$
+    // Must start with "tenant_", followed by 1–56 chars of [a-z0-9_].
     let Some(suffix) = s.strip_prefix("tenant_") else {
         return false;
     };
@@ -137,7 +137,7 @@ mod tests {
             "tenant_a_b_c",
             "tenant_123",
             "tenant_018f1a2b_3c4d",
-            &format!("tenant_{}", "a".repeat(63)),
+            &format!("tenant_{}", "a".repeat(56)),
         ] {
             assert!(ValidatedSchema::from_db(name).is_ok(), "rejected: {name}");
         }
@@ -147,14 +147,14 @@ mod tests {
     fn invalid_schema_names_are_rejected() {
         for name in [
             "",
-            "tenant_",                              // empty suffix
-            "public",                               // wrong prefix
+            "tenant_", // empty suffix
+            "public",  // wrong prefix
             "document_chunks",
-            "TENANT_ABC",                           // uppercase
-            "tenant_abc!",                          // special char
-            "tenant_abc xyz",                       // space
-            "tenant_abc-xyz",                       // hyphen not allowed
-            &format!("tenant_{}", "a".repeat(64)), // suffix too long
+            "TENANT_ABC",                          // uppercase
+            "tenant_abc!",                         // special char
+            "tenant_abc xyz",                      // space
+            "tenant_abc-xyz",                      // hyphen not allowed
+            &format!("tenant_{}", "a".repeat(57)), // suffix too long (> 56 chars, total > 63 bytes)
         ] {
             assert!(ValidatedSchema::from_db(name).is_err(), "accepted: {name}");
         }
@@ -184,10 +184,7 @@ mod tests {
 
     #[test]
     fn from_db_opt_none_gives_shared() {
-        assert_eq!(
-            ChunkTarget::from_db_opt(None).unwrap(),
-            ChunkTarget::Shared
-        );
+        assert_eq!(ChunkTarget::from_db_opt(None).unwrap(), ChunkTarget::Shared);
     }
 
     #[test]

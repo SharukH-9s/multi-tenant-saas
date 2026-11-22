@@ -468,16 +468,40 @@ async fn persist(
         })?;
 
     let chunk_target =
-        crate::repositories::tenant_repo::get_dedicated_schema(&mut tx, claimed.tenant_id)
+        match crate::repositories::tenant_repo::get_dedicated_schema(&mut tx, claimed.tenant_id)
             .await
-            .map_err(|e| {
-                warn!(error = %e, "failed to resolve dedicated schema for tenant");
-                Stop::Unavailable
-            })?;
+        {
+            Ok(target) => target,
+            Err(AppError::NotFound) => {
+                warn!(
+                    tenant_id = %claimed.tenant_id,
+                    "tenant no longer exists; ingestion job superseded"
+                );
+                let _ = tx.rollback().await;
+                return Err(Stop::Superseded);
+            }
+            Err(AppError::Internal(detail)) => {
+                warn!(
+                    tenant_id = %claimed.tenant_id,
+                    error = %detail,
+                    "invalid dedicated schema invariant in database"
+                );
+                let _ = tx.rollback().await;
+                return Err(failed(
+                    FailureCode::Internal,
+                    format!("invalid dedicated schema invariant: {detail}"),
+                ));
+            }
+            Err(e) => {
+                warn!(error = %e, "database unavailable for dedicated schema resolution");
+                let _ = tx.rollback().await;
+                return Err(Stop::Unavailable);
+            }
+        };
 
     let completed = ingestion_repo::complete(
         &mut tx,
-        &chunk_target.table(),
+        &chunk_target,
         claimed,
         &deps.state.config.ingestion.embedding_model,
         EMBEDDING_VERSION,
