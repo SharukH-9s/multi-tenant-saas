@@ -4,6 +4,8 @@ Base path: `/api/v1/tenants/{tenant_id}/documents`
 
 All endpoints require authentication via `Authorization: Bearer <token>` and a valid membership in the specified tenant. Tenant isolation is enforced via PostgreSQL Row-Level Security (RLS) and verified `TenantContext`.
 
+To search the indexed content of these documents, see [search.md](search.md).
+
 ---
 
 ## 1. Endpoints

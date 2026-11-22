@@ -374,6 +374,7 @@ async fn stale_worker_superseded() {
     }];
     let ok_b = ingestion_repo::complete(
         &mut tx_b_persist,
+        "public.document_chunks",
         &claimed_b,
         "text-embedding-3-small",
         "p4-v1",
@@ -406,6 +407,7 @@ async fn stale_worker_superseded() {
     }];
     let ok_a = ingestion_repo::complete(
         &mut tx_a_persist,
+        "public.document_chunks",
         &claimed_a,
         "text-embedding-3-small",
         "p4-v1",

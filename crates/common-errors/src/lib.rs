@@ -185,6 +185,11 @@ impl From<sqlx::Error> for AppError {
     fn from(e: sqlx::Error) -> Self {
         match e {
             sqlx::Error::RowNotFound => AppError::NotFound,
+            // The database is unreachable or saturated: a temporary problem
+            // the client can retry, not an application bug.
+            sqlx::Error::PoolTimedOut | sqlx::Error::Io(_) => {
+                AppError::ExternalService("database".into())
+            }
             other => AppError::Database(other),
         }
     }

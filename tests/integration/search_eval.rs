@@ -226,7 +226,7 @@ async fn ingest_corpus(app: &TestApp) -> (Uuid, Uuid, String) {
     (tenant_id, session.user_id, session.access_token)
 }
 
-async fn run_hybrid(app: &TestApp, ctx: &TenantContext, text: &str) -> (Vec<Ranked>, f64) {
+async fn run_hybrid(app: &TestApp, ctx: &tenant_saas::auth::RequestContext, text: &str) -> (Vec<Ranked>, f64) {
     let q = SearchQuery::parse(text, Some(10), None, &app.state.config.search).unwrap();
     let started = Instant::now();
     let out = search_service::search(&app.state, ctx, q).await.unwrap();
@@ -266,15 +266,15 @@ async fn run_branch(
     let mut tx = begin_tenant_tx(&app.state.db, ctx).await.unwrap();
     search_repo::apply_settings(&mut tx, cfg).await.unwrap();
     let cands = match &query_vec {
-        Some(v) => search_repo::vector_candidates(&mut tx, ctx.tenant_id(), v, None, 30)
+        Some(v) => search_repo::vector_candidates(&mut tx, "public.document_chunks", ctx.tenant_id(), v, None, 30)
             .await
             .unwrap(),
-        None => search_repo::lexical_candidates(&mut tx, ctx.tenant_id(), text, None, 30)
+        None => search_repo::lexical_candidates(&mut tx, "public.document_chunks", ctx.tenant_id(), text, None, 30)
             .await
             .unwrap(),
     };
     let ids: Vec<Uuid> = cands.iter().take(10).map(|c| c.chunk_id).collect();
-    let rows = search_repo::hydrate(&mut tx, ctx.tenant_id(), &ids, text)
+    let rows = search_repo::hydrate(&mut tx, "public.document_chunks", ctx.tenant_id(), &ids, text)
         .await
         .unwrap();
     tx.commit().await.unwrap();
@@ -302,7 +302,8 @@ async fn search_eval() {
         app.state.embedder.model()
     );
     let (tenant_id, user_id, _token) = ingest_corpus(&app).await;
-    let ctx = TenantContext::from_verified_membership(tenant_id, user_id, TenantRole::Owner);
+    let tc = TenantContext::from_verified_membership(tenant_id, user_id, TenantRole::Owner);
+    let ctx = tenant_saas::auth::RequestContext::for_shared(tc);
 
     // Every chunk of the corpus, to find which labels can be matched at all.
     let chunks: Vec<(String, String)> = sqlx::query_as(

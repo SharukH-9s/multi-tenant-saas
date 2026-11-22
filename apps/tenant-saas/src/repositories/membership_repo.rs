@@ -26,12 +26,17 @@ use super::db_error::map_db_error;
 ///
 /// The membership and tenant columns are `None` when there is no such
 /// membership, or when RLS hides the tenant (see `load_access`).
+///
+/// `dedicated_schema` is `None` for every tenant that has not yet been
+/// promoted to a dedicated schema (the default). When present it is
+/// forwarded to `ChunkTarget` by `tenant_resolver::decide`.
 #[derive(Debug, FromRow)]
 pub struct AccessRow {
     pub user_status: String,
     pub role: Option<String>,
     pub membership_status: Option<String>,
     pub tenant_status: Option<String>,
+    pub dedicated_schema: Option<String>,
 }
 
 /// One row from `GET /invitations` — pending invitations for the caller.
@@ -86,7 +91,8 @@ pub async fn load_access(
         "SELECT u.status AS user_status,
                 m.role,
                 m.status AS membership_status,
-                t.status AS tenant_status
+                t.status AS tenant_status,
+                t.dedicated_schema
            FROM users u
            LEFT JOIN memberships m ON m.user_id = u.id AND m.tenant_id = $1
            LEFT JOIN tenants     t ON t.id = m.tenant_id

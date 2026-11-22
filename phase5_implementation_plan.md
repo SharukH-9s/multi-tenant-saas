@@ -539,6 +539,8 @@ If the lexical branch is clearly slow for the large tenant because the GIN index
 
 **Done when** the report has every row above filled in (or marked skipped, with the reason) and the plan readings are written.
 
+**Result (2026-11-18):** 10k and 100k benchmarks completed against dedicated `tenant_saas_bench`. 100k HNSW index size: 781.26 MiB, build time: 291.65 s. Fact F5 verified on small tenants (bypasses HNSW for B-tree index scan; ANN recall = 1.000, latency = 0.45 ms). 1,000-run SQL latency on 100k chunks: P50 = 56.19 ms, P95 = 335.59 ms, P99 = 387.29 ms. k6 load test across 10/50/100 VUs: 10,162 requests, 0.00% error rate, 10 VUs P95 = 232.94 ms. All readings and query plans recorded in `docs/benchmarks/phase5-search.md §T8`.
+
 ---
 
 ### T9: Chunk-boundary analysis (P0 to measure, P1 to change, ~3h + ~3h if triggered)
@@ -622,9 +624,9 @@ Good stopping points: after T3 (search works at repo level), after T6 (feature c
 - [x] `search_repo`: settings, vector, lexical, hydrate. 57014 → 503
 - [x] `search_service` with lexical-only degrade and safe logging
 - [x] `POST /tenants/{tenant_id}/search` plus `docs/api/search.md`
-- [ ] `cross_tenant_search.rs`, `pool_reuse` case, escalation row
+- [x] `cross_tenant_search.rs`, `pool_reuse` case, escalation row
 - [x] Eval dataset v1, harness, smoke assertions, one real-provider report
-- [ ] Benchmark report: 10k and 100k, ANN recall, plans, SQL and HTTP latency
+- [x] Benchmark report: 10k and 100k, ANN recall, plans, SQL and HTTP latency
 - [x] Chunk-boundary analysis recorded (and chunker change if triggered)
 
 ### Regression guards

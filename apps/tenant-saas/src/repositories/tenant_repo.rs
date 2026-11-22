@@ -11,6 +11,7 @@ use sqlx::FromRow;
 use uuid::Uuid;
 
 use super::db_error::map_db_error;
+use crate::domain::chunk::ChunkTarget;
 
 // ── Row types ────────────────────────────────────────────────────────────────
 
@@ -24,6 +25,12 @@ pub struct TenantRow {
     pub status: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// `None` → tenant uses `public.document_chunks` (the default).
+    /// `Some` → tenant has been promoted to a dedicated schema.
+    pub dedicated_schema: Option<String>,
+    /// `true` while a promotion is in progress (Phases 2–3).
+    /// No new ingestion writes are accepted during this window.
+    pub promotion_fenced: bool,
 }
 
 /// Lightweight row used in `GET /tenants` — includes the caller's role.
@@ -62,7 +69,8 @@ pub async fn insert(tx: &mut Tx, id: Uuid, name: &str, slug: &str) -> Result<Ten
     sqlx::query_as::<_, TenantRow>(
         "INSERT INTO tenants (id, name, slug)
          VALUES ($1, $2, $3)
-         RETURNING id, name, slug, plan, status, created_at, updated_at",
+         RETURNING id, name, slug, plan, status, created_at, updated_at,
+                   dedicated_schema, promotion_fenced",
     )
     .bind(id)
     .bind(name)
@@ -144,7 +152,8 @@ pub async fn list_for_user(
 /// non-existent tenant (concealment per design D7).
 pub async fn get_by_id(tx: &mut Tx, tenant_id: Uuid) -> Result<TenantRow, AppError> {
     sqlx::query_as::<_, TenantRow>(
-        "SELECT id, name, slug, plan, status, created_at, updated_at
+        "SELECT id, name, slug, plan, status, created_at, updated_at,
+                dedicated_schema, promotion_fenced
            FROM tenants
           WHERE id = $1",
     )
@@ -175,7 +184,8 @@ pub async fn update(
                 plan   = COALESCE($4, plan),
                 status = COALESCE($5, status)
           WHERE id = $1
-          RETURNING id, name, slug, plan, status, created_at, updated_at",
+          RETURNING id, name, slug, plan, status, created_at, updated_at,
+                    dedicated_schema, promotion_fenced",
     )
     .bind(tenant_id)
     .bind(patch.name)
@@ -185,6 +195,43 @@ pub async fn update(
     .fetch_optional(&mut **tx)
     .await?
     .ok_or(AppError::NotFound)
+}
+
+// ── Schema routing (worker path) ─────────────────────────────────────────────
+
+/// Returns the `ChunkTarget` for the given tenant, for use by the ingestion
+/// worker path.
+///
+/// Unlike the HTTP path (which resolves `ChunkTarget` once at middleware time
+/// via `tenant_resolver`), the ingestion worker opens a system tenant
+/// transaction and must resolve the target at the execution boundary of each
+/// job, right before writing chunks.
+///
+/// # RLS note
+/// The worker's transaction sets `app.current_tenant_id`. The `tenants`
+/// SELECT policy allows the row for `id = app_tenant_id()`, so this query
+/// is visible under the worker's transaction context.
+///
+/// Returns `AppError::NotFound` when the tenant row does not exist (e.g. a
+/// stale event for a deleted tenant).
+pub async fn get_dedicated_schema(
+    tx: &mut Tx,
+    tenant_id: Uuid,
+) -> Result<ChunkTarget, AppError> {
+    // fetch_optional returns Option<Option<String>>:
+    //   outer None  = no row (tenant does not exist)
+    //   inner None  = row exists, dedicated_schema IS NULL → Shared
+    //   inner Some  = row exists with a dedicated schema name → Dedicated
+    let raw: Option<String> = sqlx::query_scalar(
+        "SELECT dedicated_schema FROM tenants WHERE id = $1",
+    )
+    .bind(tenant_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_db_error)?
+    .ok_or(AppError::NotFound)?;
+
+    ChunkTarget::from_db_opt(raw.as_deref())
 }
 
 #[cfg(test)]

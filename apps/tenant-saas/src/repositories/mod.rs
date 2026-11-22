@@ -12,5 +12,6 @@ pub mod ingestion_repo;
 pub mod membership_repo;
 pub mod outbox_repo;
 pub mod refresh_token_repo;
+pub mod search_repo;
 pub mod tenant_repo;
 pub mod user_repo;

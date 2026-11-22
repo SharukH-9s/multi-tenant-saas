@@ -26,6 +26,7 @@ use uuid::Uuid;
 
 use crate::{
     app_state::AppState,
+    auth::RequestContext,
     domain::document::{ContentHash, DocumentStatus, SupportedFormat},
     repositories::{
         chunk_repo,
@@ -245,7 +246,7 @@ pub async fn list(
 /// Returning 403 rather than 404 for "not your document" is deliberate:
 /// concealment protects *other tenants*; this document is inside the
 /// caller's own tenant, so hiding it would only confuse a legitimate member.
-pub async fn delete(state: &AppState, ctx: &TenantContext, id: Uuid) -> Result<(), AppError> {
+pub async fn delete(state: &AppState, ctx: &RequestContext, id: Uuid) -> Result<(), AppError> {
     // ── Permission: check delete-any first, then fall back to delete-own ─
     if !ctx.has(Permission::DocumentsDeleteAny) {
         ctx.require(Permission::DocumentsDeleteOwn)?; // Viewer stops here with 403
@@ -266,7 +267,7 @@ pub async fn delete(state: &AppState, ctx: &TenantContext, id: Uuid) -> Result<(
     // Chunks go in the same commit as `deleting`. The job is left alone (D9):
     // the worker's persist step requires `processing`, so a late worker writes
     // nothing, and the claim or the sweeper cancels the job.
-    chunk_repo::delete_for_document(&mut tx, id).await?;
+    chunk_repo::delete_for_document(&mut tx, &ctx.chunk_target.table(), id).await?;
     tx.commit().await?;
 
     // ── Step 2: delete the object from storage ──────────────────────────

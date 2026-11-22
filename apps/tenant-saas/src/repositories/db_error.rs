@@ -80,9 +80,9 @@ pub fn classify_sqlx_error(error: sqlx::Error) -> AppError {
         }
         // SQLSTATE class 08 = "Connection Exception".
         sqlx::Error::Database(db_err) => {
-            let is_connection_class = db_err.code().map(|c| c.starts_with("08")).unwrap_or(false);
-            if is_connection_class {
-                tracing::warn!(sqlstate = ?db_err.code(), "database connection exception");
+            let unavailable = db_err.code().is_some_and(|c| is_unavailable_sqlstate(&c));
+            if unavailable {
+                tracing::warn!(sqlstate = ?db_err.code(), "database unavailable or query cancelled");
                 return AppError::ExternalService("database".into());
             }
         }
@@ -91,10 +91,24 @@ pub fn classify_sqlx_error(error: sqlx::Error) -> AppError {
     AppError::from(error)
 }
 
+/// Connection exceptions (class `08`) and `57014` (statement timeout or
+/// cancel, used by the search timeout) are transient: the client may retry.
+fn is_unavailable_sqlstate(code: &str) -> bool {
+    code.starts_with("08") || code == "57014"
+}
+
 #[cfg(test)]
 mod classify_tests {
     use super::*;
     use common_errors::AppError;
+
+    #[test]
+    fn transient_sqlstates_are_unavailable() {
+        assert!(is_unavailable_sqlstate("57014"));
+        assert!(is_unavailable_sqlstate("08006"));
+        assert!(!is_unavailable_sqlstate("23505"));
+        assert!(!is_unavailable_sqlstate("57P01"));
+    }
 
     #[test]
     fn pool_timed_out_becomes_external_service() {

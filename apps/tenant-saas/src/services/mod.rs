@@ -7,6 +7,7 @@ pub mod ingestion_service;
 pub mod membership_service;
 pub mod object_key;
 pub mod rate_limiter;
+pub mod search_service;
 pub mod storage_reconciler;
 pub mod tenant_service;
 pub mod upload_validator;

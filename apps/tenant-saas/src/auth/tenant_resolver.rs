@@ -1,4 +1,4 @@
-//! Turns "this user, this tenant id from the URL" into a trusted `TenantContext`.
+//! Turns "this user, this tenant id from the URL" into a trusted `RequestContext`.
 //!
 //! This is the ONLY file that builds a `TenantContext`. Everything else gets one
 //! from here, so a tenant id from a request can never be trusted by accident.
@@ -6,6 +6,11 @@
 //! The tenant id in the URL is only a hint. The database says whether the user
 //! really is an active member, and it is asked on every request, so removing a
 //! member or changing a role takes effect immediately.
+//!
+//! The same DB query also fetches `tenants.dedicated_schema` so the
+//! `ChunkTarget` (which `document_chunks` table this tenant uses) is resolved
+//! once at request time and carried in `RequestContext` for the rest of the
+//! request lifetime — no per-query DB lookups needed downstream.
 
 use std::str::FromStr;
 
@@ -16,6 +21,8 @@ use uuid::Uuid;
 
 use crate::{
     app_state::AppState,
+    auth::request_context::RequestContext,
+    domain::chunk::ChunkTarget,
     repositories::membership_repo::{self, AccessRow},
 };
 
@@ -25,7 +32,7 @@ pub async fn resolve(
     state: &AppState,
     principal: AuthenticatedPrincipal,
     tenant_id: Uuid,
-) -> Result<TenantContext, AppError> {
+) -> Result<RequestContext, AppError> {
     let mut tx = begin_user_tx(&state.db, principal.user_id).await?;
     let row = membership_repo::load_access(&mut tx, tenant_id, principal.user_id).await?;
     // Give the connection back before deciding; nothing below needs the database.
@@ -42,20 +49,25 @@ pub fn parse_tenant_id(raw: &str) -> Result<Uuid, AppError> {
 
 /// The access rules (design D7), as a pure function so they are easy to test.
 ///
-/// | Database says                                   | Result          |
-/// |-------------------------------------------------|-----------------|
-/// | user missing or not active                      | `Unauthorized`  |
-/// | no membership                                   | `NotFound`      |
-/// | membership invited or suspended                 | `Forbidden`     |
-/// | active membership, tenant not active            | `Forbidden`     |
-/// | active membership, active tenant                | `TenantContext` |
+/// | Database says                                   | Result           |
+/// |-------------------------------------------------|------------------|
+/// | user missing or not active                      | `Unauthorized`   |
+/// | no membership                                   | `NotFound`       |
+/// | membership invited or suspended                 | `Forbidden`      |
+/// | active membership, tenant not active            | `Forbidden`      |
+/// | active membership, active tenant                | `RequestContext` |
 ///
 /// `NotFound` is also what an unknown tenant gets, which hides which tenants exist.
+///
+/// On success, `dedicated_schema` from the `AccessRow` is forwarded to
+/// `ChunkTarget::from_db_opt` and carried in the returned `RequestContext`.
+/// A corrupted value (bypassing the DB CHECK constraint) surfaces here as an
+/// `Internal` error rather than propagating to a SQL interpolation site.
 fn decide(
     tenant_id: Uuid,
     user_id: Uuid,
     row: Option<AccessRow>,
-) -> Result<TenantContext, AppError> {
+) -> Result<RequestContext, AppError> {
     let row = row.ok_or(AppError::Unauthorized)?;
     if row.user_status != ACTIVE {
         return Err(AppError::Unauthorized);
@@ -68,6 +80,10 @@ fn decide(
         return Err(AppError::Forbidden);
     }
 
+    // `row.role` and `row.membership_status` were moved above.
+    // `row.tenant_status` and `row.dedicated_schema` are still accessible
+    // as partial moves of struct fields are allowed in Rust.
+
     // An active member can always see their tenant, so `None` here is unexpected.
     match row.tenant_status.as_deref() {
         Some(ACTIVE) => {}
@@ -78,8 +94,16 @@ fn decide(
     let role = TenantRole::from_str(&role)
         .map_err(|e| AppError::Internal(format!("membership has an invalid role: {e}")))?;
 
-    Ok(TenantContext::from_verified_membership(
-        tenant_id, user_id, role,
+    // Build the chunk routing target. The DB CHECK constraint on
+    // `tenants.dedicated_schema` already enforces the naming regex, but we
+    // re-validate here as defense-in-depth (§3 of redesign analysis doc):
+    // a corrupted value must never reach a SQL identifier interpolation site.
+    let chunk_target = ChunkTarget::from_db_opt(row.dedicated_schema.as_deref())
+        .map_err(|e| AppError::Internal(format!("chunk target resolution: {e}")))?;
+
+    Ok(RequestContext::new(
+        TenantContext::from_verified_membership(tenant_id, user_id, role),
+        chunk_target,
     ))
 }
 
@@ -94,21 +118,24 @@ mod tests {
             role: Some("member".into()),
             membership_status: Some("active".into()),
             tenant_status: Some("active".into()),
+            dedicated_schema: None,
         }
     }
 
-    fn run(row: Option<AccessRow>) -> Result<TenantContext, AppError> {
+    fn run(row: Option<AccessRow>) -> Result<RequestContext, AppError> {
         decide(Uuid::new_v4(), Uuid::new_v4(), row)
     }
 
     #[test]
     fn active_member_of_active_tenant_gets_a_context() {
         let (tenant_id, user_id) = (Uuid::new_v4(), Uuid::new_v4());
-        let ctx = decide(tenant_id, user_id, Some(good_row())).unwrap();
+        let rc = decide(tenant_id, user_id, Some(good_row())).unwrap();
 
-        assert_eq!(ctx.tenant_id(), tenant_id);
-        assert_eq!(ctx.user_id(), user_id);
-        assert_eq!(ctx.role(), TenantRole::Member);
+        // RequestContext: Deref<Target = TenantContext> — methods work directly.
+        assert_eq!(rc.tenant_id(), tenant_id);
+        assert_eq!(rc.user_id(), user_id);
+        assert_eq!(rc.role(), TenantRole::Member);
+        assert_eq!(rc.chunk_target, ChunkTarget::Shared);
     }
 
     #[test]
@@ -143,6 +170,7 @@ mod tests {
             role: None,
             membership_status: None,
             tenant_status: None,
+            dedicated_schema: None,
         };
         assert!(matches!(run(Some(row)), Err(AppError::Unauthorized)));
     }
@@ -217,5 +245,25 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn dedicated_schema_is_forwarded_to_chunk_target() {
+        let row = AccessRow {
+            dedicated_schema: Some("tenant_018f1a2b3c4d".into()),
+            ..good_row()
+        };
+        let rc = run(Some(row)).unwrap();
+        assert!(!rc.chunk_target.is_shared());
+        assert_eq!(rc.chunk_target.table(), "tenant_018f1a2b3c4d.document_chunks");
+    }
+
+    #[test]
+    fn corrupted_schema_name_is_an_internal_error() {
+        let row = AccessRow {
+            dedicated_schema: Some("'; DROP TABLE tenants; --".into()),
+            ..good_row()
+        };
+        assert!(matches!(run(Some(row)), Err(AppError::Internal(_))));
     }
 }

@@ -32,6 +32,7 @@ pub const CORRUPT_PDF: &[u8] =
 /// A pending job for one freshly uploaded document.
 pub struct Fixture {
     pub app: TestApp,
+    pub token: String,
     pub tenant_id: Uuid,
     pub document_id: Uuid,
     pub job_id: Uuid,
@@ -70,6 +71,7 @@ pub async fn fixture(filename: &str, content: &[u8]) -> Option<Fixture> {
     let deps = IngestionDeps::new(app.state.clone(), unique_worker());
     Some(Fixture {
         app,
+        token: session.access_token.clone(),
         tenant_id,
         document_id,
         job_id,

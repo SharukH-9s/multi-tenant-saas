@@ -467,8 +467,17 @@ async fn persist(
             Stop::Unavailable
         })?;
 
+    let chunk_target =
+        crate::repositories::tenant_repo::get_dedicated_schema(&mut tx, claimed.tenant_id)
+            .await
+            .map_err(|e| {
+                warn!(error = %e, "failed to resolve dedicated schema for tenant");
+                Stop::Unavailable
+            })?;
+
     let completed = ingestion_repo::complete(
         &mut tx,
+        &chunk_target.table(),
         claimed,
         &deps.state.config.ingestion.embedding_model,
         EMBEDDING_VERSION,

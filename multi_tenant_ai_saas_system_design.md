@@ -1299,11 +1299,12 @@ These are starting points, not a final indexing prescription.
 
 To prevent this recall collapse, the platform requires:
 - **PostgreSQL 16**
-- **pgvector 0.8.0 or newer** (pinned and tested image tag, e.g. `pgvector/pgvector:pg16-v0.8.0`)
+- **pgvector 0.8.0 or newer** (pinned and tested image tag, e.g. `pgvector/pgvector:0.8.0-pg16`)
 - Explicit session/transaction setting:
   ```sql
-  SET LOCAL hnsw.iterative_scan = 'relaxed';
+  SET LOCAL hnsw.iterative_scan = 'relaxed_order';
   ```
+  Valid values are `off`, `strict_order`, and `relaxed_order`; an invalid value (such as `'relaxed'`) is accepted as a placeholder on a fresh connection before the library loads and then silently reset to `off` with only a WARNING once the first vector query runs.
 
 *Why version 0.8.0+ matters:* Iterative index scans were officially introduced in **pgvector 0.8.0** (version 0.7.x does not support this feature). With `relaxed` iterative scans enabled, the index scan dynamically continues traversing the graph until it satisfies the query limit with rows that pass the tenant filter.
 
@@ -1311,7 +1312,7 @@ To prevent this recall collapse, the platform requires:
 
 Benchmark checklist:
 -   Small tenants (100 chunks) co-located with large tenants (500,000 chunks).
--   Recall@10 with and without `hnsw.iterative_scan = 'relaxed'`.
+-   Recall@10 with and without `hnsw.iterative_scan = 'relaxed_order'`.
 -   Index build time and memory footprint under multi-tenant volume.
 -   Query latency at 50, 100, and 250 concurrent client connections.
 
@@ -2720,7 +2721,7 @@ These decisions prevent specific failure modes:
 | :--- | :--- | :--- |
 | **Micro-Scoped Transactions** | Connection pool exhaustion | External I/O (S3 upload, LLM generation) is strictly decoupled from PostgreSQL transaction boundaries. |
 | **Transactional Outbox (Supervised Task)** | Lost background jobs & queue drift | Events persist atomically with domain entities in PostgreSQL; worker polls via `SKIP LOCKED` and publishes to Redis Streams. |
-| **Iterative Vector Scans (`pgvector 0.8.0+`)** | Poor search recall under tenant filtering | `SET LOCAL hnsw.iterative_scan = 'relaxed'` ensures nearest-neighbor graph traversal continues until sufficient tenant-matched rows are found. |
+| **Iterative Vector Scans (`pgvector 0.8.0+`)** | Poor search recall under tenant filtering | `SET LOCAL hnsw.iterative_scan = 'relaxed_order'` ensures nearest-neighbor graph traversal continues until sufficient tenant-matched rows are found. |
 | **Storage Abstraction (`object_store`)** | Vendor lock-in & test complexity | `FileStorage` trait allows transparent swapping between local filesystem (dev/unit tests), MinIO (CI), and AWS S3 (production). |
 | **Token-Aware Chunking (`tiktoken-rs`)** | Runtime API rejection & context loss | Chunk boundaries are bounded by exact BPE token counts (500 tokens, 75 overlap) matching the embedding model's context window. |
 
@@ -3096,7 +3097,7 @@ Each runbook should state:
 6.  **Do not deploy a separate service for outbox publishing.** Supervise
     it as a background Tokio task in the worker using `SKIP LOCKED`.
 7.  **Do not use pgvector < 0.8.0 with tenant filtering.** Pin pgvector 0.8.0+
-    and enable `SET LOCAL hnsw.iterative_scan = 'relaxed'`.
+    and enable `SET LOCAL hnsw.iterative_scan = 'relaxed_order'`.
 8.  **Do not couple directly to vendor storage SDKs.** Use the `object_store`
     abstraction trait to support local fs, MinIO, and S3 seamlessly.
 9.  **Do not chunk documents by character counts.** Use `tiktoken-rs` with
@@ -3135,7 +3136,7 @@ configuration at implementation time.
   Async runtime           Tokio
   Database access         SQLx
   Database                PostgreSQL 16
-  Vector retrieval        pgvector 0.8.0+ (hnsw.iterative_scan = 'relaxed')
+  Vector retrieval        pgvector 0.8.0+ (hnsw.iterative_scan = 'relaxed_order')
   Lexical retrieval       PostgreSQL FTS (tsvector, GIN index)
   Ranking                 Reciprocal Rank Fusion (RRF, k=60)
   Cache / job transport   Redis 7

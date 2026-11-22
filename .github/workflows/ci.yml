@@ -53,7 +53,7 @@ jobs:
           echo "begin_system_tenant_tx grep guard: PASS"
       - name: Verify pure ingestion and AI modules do not touch the database
         run: |
-          hits=$(grep -rn "sqlx" apps/tenant-saas/src/ingestion/ apps/tenant-saas/src/ai/ || true)
+          hits=$(grep -rn "sqlx" apps/tenant-saas/src/ingestion/ apps/tenant-saas/src/ai/ apps/tenant-saas/src/domain/search.rs || true)
           if [ -n "$hits" ]; then
             echo "FORBIDDEN: sqlx referenced in a pure module:"
             echo "$hits"
@@ -158,6 +158,11 @@ jobs:
           echo "$output"
           echo "$output" | grep -q "permission denied"
           echo "app_runtime UPDATE document_chunks denial: PASS"
+      - name: Verify search indexes exist (Phase 5 T1)
+        run: |
+          count=$(psql "$MIGRATION_URL" -Atc "SELECT count(*) FROM pg_indexes WHERE tablename = 'document_chunks' AND indexname IN ('document_chunks_tsv_idx', 'document_chunks_embedding_hnsw_idx');")
+          test "$count" = "2"
+          echo "search indexes: PASS"
       - name: Verify ingestion tables keep RLS without FORCE (plan D2)
         run: |
           # The sweeper is a SECURITY DEFINER function owned by db_owner. It only

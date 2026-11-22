@@ -2,10 +2,10 @@ use axum::{
     extract::{FromRequestParts, RawPathParams},
     http::{header::AUTHORIZATION, request::Parts, HeaderMap},
 };
-use common_auth::{AuthenticatedPrincipal, TenantContext};
+use common_auth::AuthenticatedPrincipal;
 use common_errors::AppError;
 
-use super::tenant_resolver;
+use super::{request_context::RequestContext, tenant_resolver};
 use crate::app_state::AppState;
 
 /// Name of the URL parameter that carries the tenant id: `/tenants/{tenant_id}/...`.
@@ -39,9 +39,14 @@ impl FromRequestParts<AppState> for AuthUser {
 /// It first authenticates the caller (401), then reads `tenant_id` from the URL
 /// path only (never the body, a header or the query), then asks the database
 /// whether the caller is an active member (404 / 403 / 401, see `tenant_resolver`).
-/// Handlers then call `ctx.require(Permission::X)?` and `begin_tenant_tx`.
+///
+/// The inner `RequestContext` bundles `TenantContext` (identity / RBAC) with
+/// `ChunkTarget` (which `document_chunks` table this tenant uses).
+/// `RequestContext: Deref<Target = TenantContext>`, so handlers that do
+/// `TenantCtx(ctx): TenantCtx` and call `ctx.require(...)` or pass `&ctx`
+/// to services expecting `&TenantContext` continue to compile unchanged.
 #[derive(Debug, Clone)]
-pub struct TenantCtx(pub TenantContext);
+pub struct TenantCtx(pub RequestContext);
 
 impl FromRequestParts<AppState> for TenantCtx {
     type Rejection = AppError;
@@ -65,8 +70,8 @@ impl FromRequestParts<AppState> for TenantCtx {
             })?;
         let tenant_id = tenant_resolver::parse_tenant_id(raw_tenant_id)?;
 
-        let ctx = tenant_resolver::resolve(state, principal, tenant_id).await?;
-        Ok(TenantCtx(ctx))
+        let rc = tenant_resolver::resolve(state, principal, tenant_id).await?;
+        Ok(TenantCtx(rc))
     }
 }
 

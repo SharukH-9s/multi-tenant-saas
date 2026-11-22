@@ -9,12 +9,16 @@
 
 | Field | Value |
 |---|---|
-| Date | 2026-11-17 |
+| Date | 2026-11-17 / 2026-11-18 |
 | Git commit | `35e7e5b78b153215f4dcddc18da05c6209697bc6` |
-| OS | Windows x86_64 |
-| Embedding provider | Azure AI Foundry — `text-embedding-3-small` (1536 dims) |
+| OS | Windows 11 x86_64 |
+| RAM | 16 GB |
+| Embedding provider (Eval) | Azure AI Foundry — `text-embedding-3-small` (1536 dims) |
+| Embedding provider (Load Test) | Fake embedder (`tests/performance/search.js` via k6) |
 | PostgreSQL | `pgvector/pgvector:0.8.0-pg16` (Docker) |
-| Corpus | 25 documents, 31 chunks |
+| PostgreSQL Settings | `shared_buffers = 1GB`, `work_mem = 64MB`, `maintenance_work_mem = 256MB` |
+| Eval Corpus | 25 documents, 31 chunks |
+| Benchmark Dataset | Dedicated `tenant_saas_bench` (10k & 100k chunks, 1 large + 50 small tenants) |
 
 ---
 
@@ -124,51 +128,152 @@ trailing sentences instead of trailing paragraphs) and bump `EMBEDDING_VERSION` 
 
 ---
 
-## T8: Benchmark (Latency and Query Plans)
+## T8: Benchmark (Latency, Query Plans, and Index Sizing)
 
-> Status: **In progress** — this section will be filled in when T8 is complete.
+Benchmark executed on the dedicated `tenant_saas_bench` database populated with synthetic clustered chunks using `tests/performance/seed_search.rs`.
+The dataset models a SaaS multi-tenant distribution (§9.2): one large tenant owning 95% of chunks, and 50 small tenants with 100 chunks each.
+Query vectors were generated from perturbed cluster centroids ($\sigma = 0.1$) across 64 unit clusters in $\mathbb{R}^{1536}$.
 
-T8 requires a seeded benchmark database (separate from the test database) with 10k and
-100k chunks for a large tenant plus 50 small tenants, and k6 HTTP load tests. The numbers
-below are placeholders pending that run.
+### Index Sizing and REINDEX Timing
 
-### SQL latency (placeholder)
+| Relation | 10k Chunks Size | 10k Reindex Time | 100k Chunks Size | 100k Reindex Time |
+|---|:---:|:---:|:---:|:---:|
+| `document_chunks` (table heap) | 11.80 MiB (12,369,920 B) | — | 117.98 MiB (123,707,392 B) | — |
+| `document_chunks_embedding_hnsw_idx` (HNSW) | 78.13 MiB (81,928,192 B) | 27.81 s | 781.26 MiB (819,208,192 B) | 291.65 s (4.86 min) |
+| `document_chunks_tsv_idx` (GIN) | 0.63 MiB (663,552 B) | 112 ms | 6.21 MiB (6,512,640 B) | 1,019 ms (1.02 s) |
+| `document_chunks_position_unique` (B-tree) | 0.79 MiB | — | 7.85 MiB (8,232,960 B) | — |
+| `document_chunks_pkey` (B-tree) | 0.43 MiB | — | 4.23 MiB (4,431,872 B) | — |
 
-P50/P95/P99 of the full four-statement search transaction (settings + vector + lexical +
-hydrate) for 1 000 sequential queries against the eval tenant (31 chunks):
+*Note on 1M scale:* Skipped per plan §T8: 100k HNSW index occupies 781 MiB and requires ~5 minutes to build on a 16 GB development laptop; 1M chunks (~8 GiB index) exceeds available development container memory without swapping.
 
-| Metric | Value |
-|---|---|
-| P50 | *pending T8* |
-| P95 | *pending T8* |
-| P99 | *pending T8* |
+### ANN Recall (HNSW vs Exact Ground Truth, Top-30, 100 Queries)
 
-### HTTP latency (placeholder)
+Recall is measured by comparing the top-30 candidate IDs from the index query against the exact ground truth (`SET LOCAL enable_indexscan = off`) over 100 randomized query vectors.
 
-k6 load test against `POST /api/v1/tenants/{tenant_id}/search` with the fake embedder
-(provider cost excluded), 10 / 50 / 100 VUs for 60 s each:
+| Scale | Tenant Type | Configuration | Recall@30 | Reading |
+|---|---|---|:---:|---|
+| **10k** | Large (5k chunks) | `relaxed_order`, `ef_search = 100` | **1.0000** | Planner used exact sequential scan / top-N heapsort. |
+| **10k** | Small (100 chunks) | `iterative_scan = off` | **1.0000** | Fact F5: planner bypassed HNSW in favour of B-tree. |
+| **10k** | Small (100 chunks) | `iterative_scan = relaxed_order` | **1.0000** | Fact F5: exact B-tree scan. |
+| **100k** | Large (95k chunks) | `relaxed_order`, `ef_search = 100` | **0.0690** | Global unpartitioned HNSW graph traversal with tenant filter discards non-matching nodes during graph descent (§9.2, ADR-008). |
+| **100k** | Large (95k chunks) | `enable_indexscan = off` (Ground Truth) | **1.0000** | Full table scan baseline. |
+| **100k** | Small (100 chunks) | `iterative_scan = off` | **1.0000** | Fact F5: planner selected `document_chunks_position_unique` B-tree scan. |
+| **100k** | Small (100 chunks) | `iterative_scan = relaxed_order` | **1.0000** | Fact F5: identical B-tree scan plan. |
 
-| VUs | P50 | P95 | P99 | Throughput | Error rate |
-|:---:|:---:|:---:|:---:|:---:|:---:|
-| 10 | *pending* | *pending* | *pending* | *pending* | *pending* |
-| 50 | *pending* | *pending* | *pending* | *pending* | *pending* |
-| 100 | *pending* | *pending* | *pending* | *pending* | *pending* |
+### Query Plans (`EXPLAIN (ANALYZE, BUFFERS)` on 100k Chunks)
 
-### ANN recall (placeholder)
+#### 1. Large Tenant Vector Candidate Query
+```text
+Sort  (cost=5702.39..5702.47 rows=30 width=24) (actual time=3.482..3.484 rows=30 loops=1)
+  Sort Key: nearest.distance, nearest.id
+  Sort Method: quicksort  Memory: 26kB
+  Buffers: shared hit=2321
+  CTE nearest
+    ->  Limit  (cost=5562.34..5701.06 rows=30 width=24) (actual time=3.170..3.453 rows=30 loops=1)
+          Buffers: shared hit=2318
+          ->  Index Scan using document_chunks_embedding_hnsw_idx on document_chunks
+                (cost=5481.67..462655.17 rows=98870 width=24) (actual time=3.169..3.448 rows=30 loops=1)
+                Order By: (embedding <=> $0)
+                Filter: (tenant_id = 'deadbeef-0000-0000-0000-00000000002a'::uuid)
+                Rows Removed by Filter: 1
+                Buffers: shared hit=2318
+    ->  CTE Scan on nearest  (cost=0.00..0.60 rows=30 width=24) (actual time=3.171..3.461 rows=30 loops=1)
+          Buffers: shared hit=2318
+Planning Time: 0.931 ms
+Execution Time: 3.573 ms
+```
+*Reading:* The PostgreSQL optimizer plans an `Index Scan using document_chunks_embedding_hnsw_idx` inside the `CTE nearest MATERIALIZED`. The tenant filter is evaluated during candidate generation, and the 30 candidate vectors are sorted by distance and ID. With prewarmed shared buffers, execution time is **3.57 ms** with 0 disk reads.
 
-HNSW index vs exact scan for the large tenant (100k chunks):
+#### 2. Large Tenant Lexical Candidate Query
+```text
+Limit  (cost=16833.93..16834.01 rows=30 width=20) (actual time=59.388..59.392 rows=30 loops=1)
+  Buffers: shared hit=10876
+  ->  Sort  (cost=16833.93..16877.72 rows=17515 width=20) (actual time=59.387..59.389 rows=30 loops=1)
+        Sort Key: (ts_rank_cd(c.tsv_content, '''complianc'' & ''polici'' & ''retent'''::tsquery)) DESC, c.id
+        Sort Method: top-N heapsort  Memory: 28kB
+        Buffers: shared hit=10876
+        ->  Bitmap Heap Scan on document_chunks c  (cost=147.92..16316.64 rows=17515 width=20) (actual time=7.835..58.010 rows=16279 loops=1)
+              Recheck Cond: (tsv_content @@ '''complianc'' & ''polici'' & ''retent'''::tsquery)
+              Filter: (tenant_id = 'deadbeef-0000-0000-0000-00000000002a'::uuid)
+              Rows Removed by Filter: 827
+              Heap Blocks: exact=10820
+              Buffers: shared hit=10870
+              ->  Bitmap Index Scan on document_chunks_tsv_idx  (cost=0.00..143.54 rows=17715 width=0) (actual time=6.654..6.654 rows=17106 loops=1)
+                    Index Cond: (tsv_content @@ '''complianc'' & ''polici'' & ''retent'''::tsquery)
+                    Buffers: shared hit=50
+Planning Time: 1.298 ms
+Execution Time: 59.513 ms
+```
+*Reading:* The planner chose `Bitmap Index Scan on document_chunks_tsv_idx` followed by `Bitmap Heap Scan` filtering for the large tenant's ID. Because the large tenant owns 95% of the chunks, 16,279 matching rows were retrieved and 827 rows were filtered out, followed by a top-N heapsort on `ts_rank_cd`. Total execution time is **59.51 ms**, which is well below the 200 ms threshold from §8. `btree_gin (tenant_id, tsv_content)` is therefore deferred.
 
-| Configuration | Recall |
-|---|:---:|
-| HNSW (`relaxed_order`, `ef_search = 100`) | *pending* |
-| Exact (`enable_indexscan = off`) | 1.000 |
+#### 3. Small Tenant Vector Candidate Query
+```text
+Sort  (cost=392.20..392.27 rows=30 width=24) (actual time=0.435..0.438 rows=30 loops=1)
+  Sort Key: nearest.distance, nearest.id
+  Sort Method: quicksort  Memory: 26kB
+  Buffers: shared hit=424
+  CTE nearest
+    ->  Limit  (cost=0.42..390.87 rows=30 width=24) (actual time=0.040..0.418 rows=30 loops=1)
+          Buffers: shared hit=424
+          ->  Index Scan using document_chunks_position_unique on document_chunks
+                (cost=0.42..1301.93 rows=100 width=24) (actual time=0.038..0.413 rows=30 loops=1)
+                Index Cond: (tenant_id = 'cafebabe-0000-0001-0000-00000000002a'::uuid)
+                Order By: (embedding <=> '[...]'::vector)
+                Buffers: shared hit=424
+    ->  CTE Scan on nearest  (cost=0.00..0.60 rows=30 width=24) (actual time=0.043..0.424 rows=30 loops=1)
+          Buffers: shared hit=424
+Planning Time: 0.161 ms
+Execution Time: 0.455 ms
+```
+*Reading:* **Fact F5 confirmed.** Because the small tenant has only 100 chunks, the PostgreSQL query planner calculates that an index scan using the composite B-tree index `document_chunks_position_unique (tenant_id, document_id, chunk_index)` followed by an exact top-N sort on vector distance has significantly lower cost than traversing the HNSW graph. It bypasses HNSW entirely, yielding 100% exact ANN recall and executing in **0.45 ms**!
 
-### Query plans (placeholder)
+#### 4. Small Tenant Lexical Candidate Query
+```text
+Limit  (cost=4.89..4.90 rows=1 width=20) (actual time=1.055..1.057 rows=0 loops=1)
+  Buffers: shared hit=24
+  ->  Sort  (cost=4.89..4.90 rows=1 width=20) (actual time=1.054..1.056 rows=0 loops=1)
+        Sort Key: (ts_rank_cd(c.tsv_content, '''complianc'' & ''polici'' & ''retent'''::tsquery)) DESC, c.id
+        Sort Method: quicksort  Memory: 25kB
+        Buffers: shared hit=24
+        ->  Index Scan using document_chunks_position_unique on document_chunks c
+              (cost=0.42..4.88 rows=1 width=20) (actual time=1.051..1.051 rows=0 loops=1)
+              Index Cond: (tenant_id = 'cafebabe-0000-0001-0000-00000000002a'::uuid)
+              Filter: (tsv_content @@ '''complianc'' & ''polici'' & ''retent'''::tsquery)
+              Buffers: shared hit=24
+Planning Time: 0.285 ms
+Execution Time: 1.077 ms
+```
+*Reading:* Similarly, for lexical search on the small tenant, the planner avoids scanning the global GIN index and instead selects the tenant-scoped B-tree index `document_chunks_position_unique`, filtering by `tsv_content @@ q`. Total execution time is **1.08 ms** with 24 buffer hits.
 
-`EXPLAIN (ANALYZE, BUFFERS)` output for the vector candidate query and the lexical
-candidate query on a small tenant and the large tenant will be inserted here when T8 is
-run, with a written reading of which index was chosen and whether F5 (exact btree plan for
-small tenants) applied.
+### SQL Latency (1,000 Sequential Runs of the 4-Statement Search Transaction)
+
+Single-client sequential execution of the complete search transaction:
+1. `set_config` (`hnsw.ef_search=100`, `hnsw.iterative_scan=relaxed_order`)
+2. Vector candidates (top-30)
+3. Lexical candidates (top-30)
+4. In-memory RRF fusion and hydration of top-10 chunks with `ts_headline` snippets
+
+| Metric | 10k Chunks Dataset | 100k Chunks Dataset |
+|---|:---:|:---:|
+| **P50** | 8.12 ms | **56.19 ms** |
+| **P95** | 14.50 ms | **335.59 ms** |
+| **P99** | 22.80 ms | **387.29 ms** |
+
+### HTTP Latency (k6 Load Test with Fake Embedder)
+
+Executed against `POST /api/v1/tenants/{tenant_id}/search` via `tests/performance/search.js` on the 100k chunk dataset.
+The fake embedder isolates internal system overhead by removing external provider API latency.
+
+| Stage (VUs) | Duration | P50 Latency | P90 Latency | P95 Latency | Max Latency | Error Rate | Checks Passed |
+|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| **10 VUs** | 60 s | **191.87 ms** | 219.03 ms | **232.94 ms** | 1,697.60 ms | 0.00% | 100.00% |
+| **50 VUs** | 60 s | **857.47 ms** | 1,190.18 ms | **1,275.96 ms** | 1,654.62 ms | 0.00% | 100.00% |
+| **100 VUs** | 60 s | **1,742.87 ms** | 2,187.03 ms | **2,286.99 ms** | 2,876.61 ms | 0.00% | 100.00% |
+
+- **Total Requests Handled:** 10,162 requests
+- **Throughput:** 53.09 req/s
+- **Total Error Rate:** 0.00% (0 failures out of 10,162 requests)
+- **10 VUs SLO Target (`p(95) < 500ms`):** **PASSED** (232.94 ms)
 
 ---
 

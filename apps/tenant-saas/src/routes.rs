@@ -25,7 +25,8 @@ fn api_v1(state: &AppState) -> Router<AppState> {
     // TenantCtx extractor can resolve the membership from the path parameter.
     let tenant_sub = handlers::members::router()
         .merge(handlers::invitations::tenant_invitations_router())
-        .merge(handlers::documents::router(state));
+        .merge(handlers::documents::router(state))
+        .merge(handlers::search::router());
 
     Router::new()
         .nest("/auth", handlers::auth::router())
@@ -177,6 +178,23 @@ mod tests {
             .method("POST")
             .uri(format!("/api/v1/tenants/{id}/documents"))
             .body(Body::empty())
+            .unwrap();
+        let status = build_router(state_without_database())
+            .oneshot(req)
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn search_route_exists_and_requires_auth() {
+        let id = uuid::Uuid::new_v4();
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/tenants/{id}/search"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"query":"x"}"#))
             .unwrap();
         let status = build_router(state_without_database())
             .oneshot(req)

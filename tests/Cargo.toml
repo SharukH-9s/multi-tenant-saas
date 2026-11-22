@@ -18,6 +18,16 @@ path = "integration/main.rs"
 name = "security"
 path = "security/main.rs"
 
+# Benchmark seeder: populates tenant_saas_bench. Never ships.
+[[bin]]
+name = "seed_search"
+path = "performance/seed_search.rs"
+
+# Benchmark runner: measures ANN recall, query plans, SQL latency
+[[bin]]
+name = "bench_search"
+path = "performance/bench_search.rs"
+
 [dependencies]
 tenant-saas      = { path = "../apps/tenant-saas" }
 common-auth      = { path = "../crates/common-auth" }
@@ -27,6 +37,7 @@ common-messaging = { path = "../crates/common-messaging" }
 common-database  = { path = "../crates/common-database" }
 common-storage   = { path = "../crates/common-storage" }
 
+anyhow           = { workspace = true }
 async-trait      = { workspace = true }
 axum             = { workspace = true }
 bytes            = { workspace = true }

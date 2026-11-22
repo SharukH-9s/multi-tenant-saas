@@ -32,8 +32,13 @@ pub fn vector_literal(v: &[f32]) -> String {
 
 /// Deletes every chunk of a document and returns how many were removed.
 /// RLS limits the delete to the caller's tenant.
-pub async fn delete_for_document(tx: &mut Tx, document_id: Uuid) -> Result<u64, AppError> {
-    let result = sqlx::query("DELETE FROM document_chunks WHERE document_id = $1")
+pub async fn delete_for_document(
+    tx: &mut Tx,
+    chunk_table: &str,
+    document_id: Uuid,
+) -> Result<u64, AppError> {
+    let sql = format!("DELETE FROM {chunk_table} WHERE document_id = $1");
+    let result = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(document_id)
         .execute(&mut **tx)
         .await
@@ -42,29 +47,43 @@ pub async fn delete_for_document(tx: &mut Tx, document_id: Uuid) -> Result<u64, 
 }
 
 /// Returns the total chunk count for a document.
-pub async fn count_for_document(tx: &mut Tx, document_id: Uuid) -> Result<i64, AppError> {
-    let (count,): (i64,) =
-        sqlx::query_as("SELECT COUNT(*) FROM document_chunks WHERE document_id = $1")
-            .bind(document_id)
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(map_db_error)?;
+pub async fn count_for_document(
+    tx: &mut Tx,
+    chunk_table: &str,
+    document_id: Uuid,
+) -> Result<i64, AppError> {
+    let sql = format!("SELECT COUNT(*) FROM {chunk_table} WHERE document_id = $1");
+    let (count,): (i64,) = sqlx::query_as(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(document_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(map_db_error)?;
     Ok(count)
 }
 
 /// Deletes all chunks of the document, then inserts `chunks` in UNNEST batches of 200 (D8).
 pub async fn replace_for_document(
     tx: &mut Tx,
+    chunk_table: &str,
     tenant_id: Uuid,
     document_id: Uuid,
     model: &str,
     version: &str,
     chunks: &[NewChunk<'_>],
 ) -> Result<(), AppError> {
-    delete_for_document(tx, document_id).await?;
+    delete_for_document(tx, chunk_table, document_id).await?;
     if chunks.is_empty() {
         return Ok(());
     }
+
+    let sql = format!(
+        "INSERT INTO {chunk_table} \
+            (tenant_id, document_id, chunk_index, content, token_count, \
+             embedding, embedding_model, embedding_version, metadata) \
+         SELECT $1, $2, t.idx, t.content, t.tokens, t.emb::vector, $3, $4, t.meta::jsonb \
+           FROM UNNEST($5::int[], $6::text[], $7::int[], $8::text[], $9::text[]) \
+                AS t(idx, content, tokens, emb, meta)",
+    );
 
     for batch in chunks.chunks(200) {
         let indices: Vec<i32> = batch.iter().map(|c| c.index).collect();
@@ -73,26 +92,19 @@ pub async fn replace_for_document(
         let embeddings: Vec<String> = batch.iter().map(|c| vector_literal(c.embedding)).collect();
         let metadatas: Vec<String> = batch.iter().map(|c| c.metadata.to_string()).collect();
 
-        sqlx::query(
-            "INSERT INTO document_chunks \
-                (tenant_id, document_id, chunk_index, content, token_count, \
-                 embedding, embedding_model, embedding_version, metadata) \
-             SELECT $1, $2, t.idx, t.content, t.tokens, t.emb::vector, $3, $4, t.meta::jsonb \
-               FROM UNNEST($5::int[], $6::text[], $7::int[], $8::text[], $9::text[]) \
-                    AS t(idx, content, tokens, emb, meta)",
-        )
-        .bind(tenant_id)
-        .bind(document_id)
-        .bind(model)
-        .bind(version)
-        .bind(&indices)
-        .bind(&contents)
-        .bind(&token_counts)
-        .bind(&embeddings)
-        .bind(&metadatas)
-        .execute(&mut **tx)
-        .await
-        .map_err(map_db_error)?;
+        sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(tenant_id)
+            .bind(document_id)
+            .bind(model)
+            .bind(version)
+            .bind(&indices)
+            .bind(&contents)
+            .bind(&token_counts)
+            .bind(&embeddings)
+            .bind(&metadatas)
+            .execute(&mut **tx)
+            .await
+            .map_err(map_db_error)?;
     }
 
     Ok(())
